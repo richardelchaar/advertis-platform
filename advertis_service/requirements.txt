@@ -1,0 +1,13 @@
+# FastAPI server and utilities
+fastapi
+uvicorn[standard]
+python-dotenv
+
+# Database and Cache clients
+redis
+
+# Core AI and Vector Store libraries
+langchain
+langgraph
+langchain-openai
+chromadb

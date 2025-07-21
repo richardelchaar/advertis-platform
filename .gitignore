@@ -1,0 +1,17 @@
+# Environment variables - NEVER commit secrets
+.env
+*.env
+
+# Python cache and virtual environments
+__pycache__/
+*.pyc
+venv/
+.venv/
+env/
+.env/
+
+# IDE / OS specific clutter
+.idea/
+.vscode/
+*.swp
+.DS_Store

@@ -1,0 +1,83 @@
+# Defines the multi-container application for local development.
+# To run: docker-compose up --build
+version: '3.8'
+
+services:
+  # PostgreSQL database for the Host Application
+  host_db:
+    image: postgres:15-alpine
+    container_name: host_db
+    environment:
+      - POSTGRES_USER=questweaver
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=questweaver_db
+    ports:
+      - "5432:5432" # Exposes the DB port to the host machine for inspection
+    volumes:
+      - host_db_data:/var/lib/postgresql/data # Persists DB data across restarts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U questweaver -d questweaver_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis cache for the Advertis Service's Frequency Gate
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ChromaDB for the Advertis Service's semantic ad search
+  chroma_db:
+    image: chromadb/chroma
+    container_name: chroma_db
+    ports:
+      - "8001:8000" # Maps Chroma's internal port 8000 to 8001 on host
+    restart: unless-stopped
+
+  # The Host Application Backend (QuestWeaver)
+  host_app:
+    build:
+      context: ./host_app
+      dockerfile: Dockerfile
+    container_name: host_app
+    ports:
+      - "8080:8000" # Maps container port 8000 to host port 8080
+    volumes:
+      - ./host_app/app:/code/app # Mounts local code for live reloading
+    env_file: ./.env
+    depends_on:
+      host_db:
+        condition: service_healthy # Ensures DB is ready before starting
+      advertis_service:
+        condition: service_started # Waits for advertis_service to start
+    restart: unless-stopped
+
+  # The Advertis Inference Service
+  advertis_service:
+    build:
+      context: ./advertis_service
+      dockerfile: Dockerfile
+    container_name: advertis_service
+    ports:
+      - "8081:8000" # Maps container port 8000 to host port 8081
+    volumes:
+      - ./advertis_service/app:/code/app
+    env_file: ./.env
+    depends_on:
+      redis:
+        condition: service_healthy # Ensures Redis is ready
+      chroma_db:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  host_db_data: # Defines the named volume for data persistence
