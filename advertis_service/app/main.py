@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from .models import CheckRequest, AdRequest, AdResponse
-from .services import redis_client, agent_graph
+from .services import redis_client
+from .services.agent_registry import get_agent
 
 # Initialize the FastAPI app
 app = FastAPI(
@@ -37,19 +38,23 @@ async def get_response_endpoint(request: AdRequest):
     Runs the full AI agent graph to generate a response.
     This is the expensive call, only made if /check-opportunity succeeds.
     """
-    try:
-        # 1. Run the full agent graph
-        result = await agent_graph.run(
-            history=request.conversation_history, 
-            vertical="gaming" # In a real app, this could come from the request
+    # 1. Get the correct agent from the registry based on the request
+    agent = get_agent(request.app_vertical)
+    if not agent:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported or invalid 'app_vertical': {request.app_vertical}"
         )
+
+    try:
+        # 2. Run the selected agent
+        result = await agent.run(history=request.conversation_history)
         
-        # 2. Update the frequency state in Redis
-        # We update the state here, after a final decision has been made.
+        # 3. Update the frequency state in Redis
         ad_was_shown = (result["status"] == "inject")
         redis_client.update_state(request.session_id, ad_shown=ad_was_shown)
 
-        # 3. Return the final, structured response
+        # 4. Return the final, structured response
         return AdResponse(
             status=result["status"],
             response_text=result["response_text"]

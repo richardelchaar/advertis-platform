@@ -20,6 +20,7 @@ class CheckResponse(BaseModel):
 class AdRequest(BaseModel):
     """The request payload for the main response generation call."""
     session_id: str
+    app_vertical: str
     conversation_history: List[dict]
 
 class AdResponse(BaseModel):

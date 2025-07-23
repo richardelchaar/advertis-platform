@@ -81,3 +81,4 @@ services:
 
 volumes:
   host_db_data: # Defines the named volume for data persistence
+  chroma_db_data:

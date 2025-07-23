@@ -1,0 +1,15 @@
+# Core application framework
+streamlit
+
+# Utilities
+python-dotenv
+
+# For making async API calls to advertis_service
+httpx
+
+# Database ORM and PostgreSQL driver
+SQLAlchemy
+psycopg2-binary
+
+# For our fallback LLM
+langchain-openai
