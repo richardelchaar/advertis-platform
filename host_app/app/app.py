@@ -1,7 +1,10 @@
-# host_app/app/app.py
+import sys
+sys.path.insert(0, '/code')
+
 import streamlit as st
 import uuid
-from services import database, advertis_client, fallback_llm
+import asyncio
+from app.services import database, advertis_client, fallback_llm
 
 # --- Page Configuration ---
 st.set_page_config(page_title="Advertis Host App", page_icon="🏠")
@@ -13,8 +16,9 @@ db_session = next(database.get_db())
 # --- Sidebar for Session Control ---
 st.sidebar.title("Session Control")
 
-# For now, we'll simulate a single user. In a real app, this would come from a login system.
-DUMMY_USER_ID = 1 
+# --- Get or Create Dummy User ---
+# This ensures our default user exists before any sessions are made.
+dummy_user = database.get_or_create_dummy_user(db_session)
 
 # Dropdown to select the vertical. For now, only "gaming" is available.
 # In the future, the agent_registry would provide these keys.
@@ -36,7 +40,7 @@ if st.sidebar.button("Start New Chat"):
     # Create a new session in the database
     new_session = database.create_chat_session(
         db_session=db_session,
-        user_id=DUMMY_USER_ID,
+        user_id=dummy_user.id,
         system_prompt=system_prompt,
         app_vertical=selected_vertical
     )
@@ -59,6 +63,22 @@ for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
+# Define the new async orchestrator function
+async def get_final_response(session_id: uuid.UUID, prompt: str) -> str:
+    """
+    Orchestrates getting the final response by calling the simplified SDK wrapper.
+    """
+    # Get the full history from the database
+    history = database.get_chat_history(db_session, session_id)
+
+    # The implementation is now just a single, declarative line!
+    return await advertis_client.get_monetized_response(
+        session_id=str(session_id),
+        app_vertical=selected_vertical,
+        history=history,
+        fallback_func=fallback_llm.get_fallback_response
+    )
+
 # Handle user input
 if prompt := st.chat_input("What do you do?"):
     if "session_id" not in st.session_state:
@@ -74,32 +94,11 @@ if prompt := st.chat_input("What do you do?"):
         # Save user message to DB
         database.save_message(db_session, session_id, "user", prompt)
 
-        # --- THIS IS THE CORE "SDK" ORCHESTRATION LOGIC ---
+        # --- THIS IS THE REFACTORED ORCHESTRATION LOGIC ---
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
-                final_response_text = ""
-                
-                # 1. Fast pre-flight check
-                opportunity = await advertis_client.check_opportunity(str(session_id), prompt)
-                
-                if opportunity.proceed:
-                    # 2. If check passes, get full history and make main call
-                    history = database.get_chat_history(db_session, session_id)
-                    ad_response = await advertis_client.get_response(str(session_id), selected_vertical, history)
-                    
-                    if ad_response.status == "inject":
-                        # 3a. Use the response from Advertis service
-                        print(f"---INJECTING RESPONSE from advertis_service---")
-                        final_response_text = ad_response.response_text
-                    else: # status == "skip"
-                        # 3b. Use the internal fallback LLM
-                        final_response_text = await fallback_llm.get_fallback_response(history)
-                else:
-                    # 4. If pre-flight check fails, use fallback LLM
-                    history = database.get_chat_history(db_session, session_id)
-                    final_response_text = await fallback_llm.get_fallback_response(history)
-
-                # Display the final response
+                # Call the async orchestrator function just once
+                final_response_text = asyncio.run(get_final_response(session_id, prompt))
                 st.markdown(final_response_text)
 
         # Add AI response to state and save to DB

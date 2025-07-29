@@ -20,4 +20,4 @@ COPY ./app /code/app
 # Command to run the Streamlit application
 # --server.port 8000 makes it run on the port we defined in docker-compose
 # --server.address 0.0.0.0 makes it accessible from outside the container
-CMD ["streamlit", "run", "app/app.py", "--server.port=8000", "--server.address=0.0.0.0"]
+CMD ["python", "-m", "streamlit", "run", "app/app.py", "--server.port=8000", "--server.address=0.0.0.0"]

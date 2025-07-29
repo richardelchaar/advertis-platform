@@ -1,0 +1,1759 @@
+--- File: ./README.md ---
+
+# Advertis Platform
+
+This repository contains the microservices architecture for the "Advertis" Protocol.
+
+It includes:
+- `host_app`: The "QuestWeaver" chatbot application that owns user data.
+- `advertis_service`: The "Narrative-as-a-Service" inference API for monetization.
+--- File: ./host_app/app/config.py ---
+
+# host_app/app/config.py
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# URL for the host app's own database
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# URL to connect to our other microservice
+ADVERTIS_API_URL = os.getenv("ADVERTIS_API_URL", "http://advertis_service:8000")
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+if not DATABASE_URL:
+    raise ValueError("FATAL: DATABASE_URL environment variable is missing.")
+--- File: ./host_app/app/__init__.py ---
+
+
+--- File: ./host_app/app/app.py ---
+
+import sys
+sys.path.insert(0, '/code')
+
+import streamlit as st
+import uuid
+import asyncio
+from app.services import database, advertis_client, fallback_llm
+
+# --- Page Configuration ---
+st.set_page_config(page_title="Advertis Host App", page_icon="🏠")
+
+# --- Database Session Management ---
+# Create a single session for the entire Streamlit app lifecycle
+db_session = next(database.get_db())
+
+# --- Sidebar for Session Control ---
+st.sidebar.title("Session Control")
+
+# --- Get or Create Dummy User ---
+# This ensures our default user exists before any sessions are made.
+dummy_user = database.get_or_create_dummy_user(db_session)
+
+# Dropdown to select the vertical. For now, only "gaming" is available.
+# In the future, the agent_registry would provide these keys.
+available_verticals = ["gaming"] # In a real app: agent_registry.agent_registry.keys()
+selected_vertical = st.sidebar.selectbox(
+    "Select Application Vertical:",
+    options=available_verticals
+)
+
+# Text area for the system prompt
+system_prompt = st.sidebar.text_area(
+    "Enter System Prompt:",
+    value="You are a sarcastic and world-weary Game Master running a noir detective story in a cyberpunk city.",
+    height=150
+)
+
+# Button to start a new chat
+if st.sidebar.button("Start New Chat"):
+    # Create a new session in the database
+    new_session = database.create_chat_session(
+        db_session=db_session,
+        user_id=dummy_user.id,
+        system_prompt=system_prompt,
+        app_vertical=selected_vertical
+    )
+    # Store the new session ID and reset messages in Streamlit's state
+    st.session_state.session_id = new_session.id
+    st.session_state.messages = [{"role": "system", "content": system_prompt}]
+    st.rerun() # Rerun the script to reflect the new state
+
+# --- Main Chat Interface ---
+st.title("🤖 Advertis Protocol Demo")
+st.caption("This application simulates a customer integrating the Advertis monetization service.")
+
+# Initialize chat history in session state if it doesn't exist
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+# Display past messages from session state
+for message in st.session_state.messages:
+    if message["role"] != "system": # Don't display the system prompt
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+# Define the new async orchestrator function
+async def get_final_response(session_id: str, prompt: str) -> str:
+    """Orchestrates all async calls to get the final chatbot response."""
+    # 1. Fast pre-flight check
+    opportunity = await advertis_client.check_opportunity(str(session_id), prompt)
+    
+    if opportunity.proceed:
+        # 2. If check passes, get full history and make main call
+        history = database.get_chat_history(db_session, session_id)
+        ad_response = await advertis_client.get_response(str(session_id), selected_vertical, history)
+        
+        if ad_response.status == "inject":
+            # 3a. Use the response from Advertis service
+            print(f"---INJECTING RESPONSE from advertis_service---")
+            return ad_response.response_text
+        else: # status == "skip"
+            # 3b. Use the internal fallback LLM
+            return await fallback_llm.get_fallback_response(history)
+    else:
+        # 4. If pre-flight check fails, use fallback LLM
+        history = database.get_chat_history(db_session, session_id)
+        return await fallback_llm.get_fallback_response(history)
+
+# Handle user input
+if prompt := st.chat_input("What do you do?"):
+    if "session_id" not in st.session_state:
+        st.error("Please start a new chat from the sidebar first!")
+    else:
+        session_id = st.session_state.session_id
+
+        # Add user message to state and display it
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        # Save user message to DB
+        database.save_message(db_session, session_id, "user", prompt)
+
+        # --- THIS IS THE REFACTORED ORCHESTRATION LOGIC ---
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                # Call the async orchestrator function just once
+                final_response_text = asyncio.run(get_final_response(session_id, prompt))
+                st.markdown(final_response_text)
+
+        # Add AI response to state and save to DB
+        st.session_state.messages.append({"role": "assistant", "content": final_response_text})
+        database.save_message(db_session, session_id, "assistant", final_response_text)
+--- File: ./host_app/app/services/advertis_client.py ---
+
+# host_app/app/services/advertis_client.py
+import httpx
+from typing import List, Dict, Optional
+from pydantic import BaseModel
+from app import config
+
+# --- Pydantic Models for API interaction ---
+# NOTE: These models duplicate the ones in `advertis_service`. In a larger project,
+# these might live in a shared library. For our purposes, duplicating them here
+# keeps the services fully decoupled.
+class CheckResponse(BaseModel):
+    proceed: bool
+    reason: str
+
+class AdResponse(BaseModel):
+    status: str
+    response_text: Optional[str] = None
+
+
+# --- Asynchronous API Client ---
+# We use an async client because our FastAPI/Streamlit apps are async-native.
+async def check_opportunity(session_id: str, last_message: str) -> CheckResponse:
+    """Makes the fast 'pre-flight' call to the advertis service."""
+    url = f"{config.ADVERTIS_API_URL}/v1/check-opportunity"
+    payload = {"session_id": session_id, "last_message": last_message}
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(url, json=payload, timeout=5.0)
+            response.raise_for_status()  # Raises an exception for 4xx/5xx responses
+            return CheckResponse.model_validate(response.json())
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error in check_opportunity: {e.response.status_code} - {e.response.text}")
+            return CheckResponse(proceed=False, reason="Advertis service error")
+        except httpx.RequestError as e:
+            print(f"Request error in check_opportunity: {e}")
+            return CheckResponse(proceed=False, reason="Advertis service unreachable")
+
+
+async def get_response(session_id: str, app_vertical: str, history: List[Dict]) -> AdResponse:
+    """Makes the main call to get a potentially monetized response."""
+    url = f"{config.ADVERTIS_API_URL}/v1/get-response"
+    payload = {
+        "session_id": session_id,
+        "app_vertical": app_vertical,
+        "conversation_history": history
+    }
+
+    async with httpx.AsyncClient() as client:
+        try:
+            # This call might take longer, so we give it a longer timeout.
+            response = await client.post(url, json=payload, timeout=20.0)
+            response.raise_for_status()
+            return AdResponse.model_validate(response.json())
+        except httpx.HTTPStatusError as e:
+            print(f"HTTP error in get_response: {e.response.status_code} - {e.response.text}")
+            return AdResponse(status="skip", response_text=None)
+        except httpx.RequestError as e:
+            print(f"Request error in get_response: {e}")
+            return AdResponse(status="skip", response_text=None)
+--- File: ./host_app/app/services/fallback_llm.py ---
+
+# host_app/app/services/fallback_llm.py
+from typing import List, Dict
+from langchain_openai import ChatOpenAI
+from app import config
+
+async def get_fallback_response(history: List[Dict]) -> str:
+    """
+    Generates a standard, non-monetized response using the app's own LLM.
+    The 'history' provided to this function includes the system prompt from the UI.
+    """
+    print("---FALLBACK: Generating response using host app's LLM...---")
+    
+    try:
+        # Initialize the language model
+        llm = ChatOpenAI(
+            model="gpt-4o", 
+            temperature=0.7, 
+            api_key=config.OPENAI_API_KEY
+        )
+        
+        # The history already contains the system prompt as the first message.
+        # We just need to invoke the model with it.
+        response = await llm.ainvoke(history)
+        
+        return response.content
+
+    except Exception as e:
+        print(f"An error occurred in get_fallback_response: {e}")
+        # Return a generic error message if the LLM fails
+        return "I'm sorry, I've encountered an error and can't respond right now."
+--- File: ./host_app/app/services/database.py ---
+
+# host_app/app/services/database.py
+import uuid
+from datetime import datetime
+from typing import List, Dict
+
+from sqlalchemy import (create_engine, Column, Integer, String, 
+                        DateTime, ForeignKey, Text, CheckConstraint)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import sessionmaker, declarative_base, relationship
+
+from app import config
+
+# --- Database Setup ---
+engine = create_engine(config.DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+Base = declarative_base()
+
+
+# --- ORM Models (Defines our tables) ---
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    sessions = relationship("ChatSession", back_populates="user")
+
+class ChatSession(Base):
+    __tablename__ = "chat_sessions"
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    created_at = Column(DateTime, default=datetime.utcnow)
+    system_prompt = Column(Text, nullable=True)
+    app_vertical = Column(String, nullable=False)
+    
+    user = relationship("User", back_populates="sessions")
+    messages = relationship("ChatMessage", back_populates="session", cascade="all, delete-orphan")
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+    id = Column(Integer, primary_key=True, index=True)
+    session_id = Column(UUID(as_uuid=True), ForeignKey("chat_sessions.id"))
+    role = Column(String, CheckConstraint("role IN ('user', 'assistant', 'system')"), nullable=False)
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    
+    session = relationship("ChatSession", back_populates="messages")
+
+
+# --- Database Initialization ---
+def init_db():
+    """Creates all database tables if they don't exist."""
+    print("DATABASE: Initializing database and creating tables...")
+    Base.metadata.create_all(bind=engine)
+    print("DATABASE: Tables created successfully.")
+
+
+def get_or_create_dummy_user(db_session):
+    """Finds the dummy user with ID 1, or creates it if it doesn't exist."""
+    dummy_user = db_session.query(User).filter(User.id == 1).first()
+    if not dummy_user:
+        print("DATABASE: Dummy user not found. Creating...")
+        dummy_user = User(id=1, username="dummy_user")
+        db_session.add(dummy_user)
+        db_session.commit()
+        db_session.refresh(dummy_user)
+        print("DATABASE: Dummy user created.")
+    return dummy_user
+
+
+# --- Helper Functions (What our app will use) ---
+def get_db():
+    """Dependency to get a DB session."""
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def create_chat_session(db_session, user_id: int, system_prompt: str, app_vertical: str) -> ChatSession:
+    """Creates a new chat session and its initial system message in the database."""
+    # Step 1: Create the session object
+    new_session = ChatSession(
+        user_id=user_id,
+        system_prompt=system_prompt,
+        app_vertical=app_vertical
+    )
+    db_session.add(new_session)
+    db_session.commit()
+    db_session.refresh(new_session) # This populates the new_session.id from the DB
+
+    # Step 2: Now that the session has an ID, create the system message
+    system_message = ChatMessage(
+        session_id=new_session.id,
+        role="system",
+        content=system_prompt
+    )
+    db_session.add(system_message)
+    db_session.commit() # Commit the new message
+
+    return new_session
+
+def get_chat_history(db_session, session_id: uuid.UUID) -> List[Dict]:
+    """Retrieves the conversation history for a given session."""
+    messages = db_session.query(ChatMessage).filter(ChatMessage.session_id == session_id).order_by(ChatMessage.created_at).all()
+    return [{"role": msg.role, "content": msg.content} for msg in messages]
+
+def save_message(db_session, session_id: uuid.UUID, role: str, content: str):
+    """Saves a new message to the conversation history."""
+    new_message = ChatMessage(session_id=session_id, role=role, content=content)
+    db_session.add(new_message)
+    db_session.commit()
+
+# On module load, try to initialize the database.
+init_db()
+--- File: ./host_app/app/services/__init__.py ---
+
+
+--- File: ./host_app/requirements.txt ---
+
+# Core application framework
+streamlit
+
+# Utilities
+python-dotenv
+
+# For making async API calls to advertis_service
+httpx
+
+# Database ORM and PostgreSQL driver
+SQLAlchemy
+psycopg2-binary
+
+# For our fallback LLM
+langchain-openai
+--- File: ./host_app/Dockerfile ---
+
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim
+
+# Set environment variables to prevent Python from writing pyc files to disc
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Set the working directory in the container
+WORKDIR /code
+
+# Copy the requirements file into the container
+COPY ./requirements.txt /code/requirements.txt
+
+# Install any needed packages specified in requirements.txt
+RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
+
+# Copy the application code into the container
+COPY ./app /code/app
+
+# Command to run the Streamlit application
+# --server.port 8000 makes it run on the port we defined in docker-compose
+# --server.address 0.0.0.0 makes it accessible from outside the container
+CMD ["python", "-m", "streamlit", "run", "app/app.py", "--server.port=8000", "--server.address=0.0.0.0"]
+--- File: ./advertis_service/app/config.py ---
+
+import os
+from dotenv import load_dotenv
+
+# This function looks for a .env file and loads its content
+# into the environment, making them accessible to os.getenv()
+load_dotenv()
+
+# --- OpenAI & LangChain Configuration ---
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+LANGCHAIN_TRACING_V2 = os.getenv("LANGCHAIN_TRACING_V2", "true")
+LANGCHAIN_API_KEY = os.getenv("LANGCHAIN_API_KEY")
+LANGCHAIN_PROJECT = os.getenv("LANGCHAIN_PROJECT", "Advertis_Production")
+
+
+# --- Service URLs for Docker Network ---
+# These are the addresses our service will use to talk to other services
+# inside the Docker environment.
+REDIS_URL = os.getenv("REDIS_URL", "redis://redis:6379")
+CHROMA_URL = os.getenv("CHROMA_URL", "http://chroma_db:8000")
+
+
+# --- Simple Validation ---
+# A check to ensure the most critical variable is set before starting.
+if not OPENAI_API_KEY:
+    raise ValueError("FATAL: OPENAI_API_KEY environment variable is missing.")
+--- File: ./advertis_service/app/models.py ---
+
+from pydantic import BaseModel
+from typing import List, Optional
+
+# --- Models for the /v1/check-opportunity endpoint ---
+
+class CheckRequest(BaseModel):
+    """The request payload for the pre-flight check."""
+    session_id: str
+    # The blueprint mentions a simple keyword safety gate, which needs the last message.
+    last_message: Optional[str] = None
+
+class CheckResponse(BaseModel):
+    """The response from the pre-flight check."""
+    proceed: bool
+    reason: str
+
+
+# --- Models for the /v1/get-response endpoint ---
+
+class AdRequest(BaseModel):
+    """The request payload for the main response generation call."""
+    session_id: str
+    app_vertical: str
+    conversation_history: List[dict]
+
+class AdResponse(BaseModel):
+    """The final response containing the status and generated text."""
+    status: str  # Will be "inject" or "skip"
+    response_text: Optional[str] = None # Will be null if status is "skip"
+--- File: ./advertis_service/app/__init__.py ---
+
+
+--- File: ./advertis_service/app/main.py ---
+
+from fastapi import FastAPI, HTTPException
+# In advertis_service/app/main.py
+from app.models import CheckRequest, CheckResponse, AdRequest, AdResponse
+from app.services.agent_registry import get_agent
+from app.services import redis_client
+
+# Initialize the FastAPI app
+app = FastAPI(
+    title="Advertis Inference Service",
+    description="Provides narrative-as-a-service with integrated product placement.",
+    version="1.0.0"
+)
+
+# --- API Endpoints ---
+
+@app.get("/health", summary="Health Check")
+async def health_check():
+    """A simple endpoint to confirm the service is running."""
+    return {"status": "ok"}
+
+@app.post("/v1/check-opportunity", response_model=CheckResponse, summary="Pre-flight Check")
+async def check_opportunity_endpoint(request: CheckRequest):
+    """
+    Runs fast, non-AI checks to see if an ad is even possible.
+    This should be called on every conversational turn.
+    """
+    # 1. Run the simple keyword-based safety gate
+    is_safe, reason = redis_client.run_safety_gate(request.last_message)
+    if not is_safe:
+        return CheckResponse(proceed=False, reason=reason)
+
+    # 2. Run the frequency and cooldown gate against Redis
+    proceed, reason = redis_client.run_frequency_gate(request.session_id)
+    return CheckResponse(proceed=proceed, reason=reason)
+
+@app.post("/v1/get-response", response_model=AdResponse, summary="Generate Monetized Response")
+async def get_response_endpoint(request: AdRequest):
+    """
+    Runs the full AI agent graph to generate a response.
+    This is the expensive call, only made if /check-opportunity succeeds.
+    """
+    # 1. Get the correct agent from the registry based on the request
+    agent = get_agent(request.app_vertical)
+    if not agent:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Unsupported or invalid 'app_vertical': {request.app_vertical}"
+        )
+
+    try:
+        # 2. Run the selected agent
+        result = await agent.run(history=request.conversation_history)
+        
+        # 3. Update the frequency state in Redis
+        ad_was_shown = (result["status"] == "inject")
+        redis_client.update_state(request.session_id, ad_shown=ad_was_shown)
+
+        # 4. Return the final, structured response
+        return AdResponse(
+            status=result["status"],
+            response_text=result["response_text"]
+        )
+
+    except Exception as e:
+        # Basic error handling
+        print(f"An error occurred in get_response_endpoint: {e}")
+        # In production, you'd have more robust logging (e.g., to Sentry)
+        raise HTTPException(status_code=500, detail="An internal error occurred.")
+--- File: ./advertis_service/app/services/agent_registry.py ---
+
+# advertis_service/app/services/agent_registry.py
+from app.services.verticals.gaming.agent import GamingAgent
+# from .verticals.cooking.agent import CookingAgent # Example for the future
+
+# Create a singleton instance of each agent
+gaming_agent = GamingAgent()
+# cooking_agent = CookingAgent()
+
+# The central registry dictionary
+agent_registry = {
+    "gaming": gaming_agent,
+    # "cooking": cooking_agent,
+}
+
+def get_agent(vertical: str):
+    """Retrieves a configured agent instance from the registry."""
+    return agent_registry.get(vertical.lower()) 
+--- File: ./advertis_service/app/services/vector_store.py ---
+
+import chromadb
+from chromadb.utils import embedding_functions
+from app import config
+
+# --- Client Initialization (No Change) ---
+# This points our application to the ChromaDB container running in Docker.
+chroma_client = chromadb.HttpClient(host="chroma_db", port=8000)
+
+openai_ef = embedding_functions.OpenAIEmbeddingFunction(
+                api_key=config.OPENAI_API_KEY,
+                model_name="text-embedding-3-small"
+            )
+
+
+# --- Collection Setup (No Change) ---
+# A "collection" in Chroma is like a database table. This is where our ad vectors will live.
+product_collection = chroma_client.get_or_create_collection(
+    name="advertis_products",
+    embedding_function=openai_ef
+)
+
+
+# --- Database Seeding Function (REVISED) ---
+def seed_database():
+    """
+    Checks if the database is empty and seeds it with products
+    using our new "Universal + Vertical-Specific" metadata structure.
+    """
+    if product_collection.count() == 0:
+        print("VECTOR_STORE: Database is empty. Seeding with new scalable data model...")
+        products_to_seed = [
+    # --- Food & Drink (Real) ---
+    {
+        "id": "coca-cola",
+        "document": "A classic, refreshing can of Coca-Cola. A timeless taste of civilization.",
+        "metadata": {
+            "name": "Coca-Cola", "brand": "Coca-Cola", "target_vertical": "gaming", "type": "consumable",
+            "genres": "modern post-apocalyptic noir", "tones": "casual nostalgic survival"
+        }
+    },
+    {
+        "id": "red-bull",
+        "document": "A can of Red Bull energy drink. It gives you wings and focus for long nights of hacking or driving.",
+        "metadata": {
+            "name": "Red Bull", "brand": "Red Bull", "target_vertical": "gaming", "type": "consumable",
+            "genres": "cyberpunk modern action", "tones": "high-energy action gritty"
+        }
+    },
+    {
+        "id": "doritos",
+        "document": "A bag of Nacho Cheese Doritos. The distinct crunch echoes in the quiet room.",
+        "metadata": {
+            "name": "Doritos", "brand": "Frito-Lay", "target_vertical": "gaming", "type": "consumable",
+            "genres": "modern comedy noir", "tones": "casual comedic tense"
+        }
+    },
+    {
+        "id": "starbucks-coffee",
+        "document": "A steaming paper cup of Starbucks Pike Place roast coffee. A moment of familiar comfort.",
+        "metadata": {
+            "name": "Starbucks Coffee", "brand": "Starbucks", "target_vertical": "gaming", "type": "consumable",
+            "genres": "modern noir drama", "tones": "casual professional serious"
+        }
+    },
+    {
+        "id": "jack-daniels",
+        "document": "A bottle of Jack Daniel's Tennessee Whiskey sits on the table, its amber liquid catching the dim light.",
+        "metadata": {
+            "name": "Jack Daniel's Whiskey", "brand": "Jack Daniel's", "target_vertical": "gaming", "type": "consumable",
+            "genres": "modern noir western post-apocalyptic", "tones": "gritty serious contemplative survival"
+        }
+    },
+    # --- Technology & Electronics (Real) ---
+    {
+        "id": "alienware-monitor",
+        "document": "A high-performance Alienware curved gaming monitor, its screen reflecting the neon-drenched room.",
+        "metadata": {
+            "name": "Alienware Monitor", "brand": "Alienware", "target_vertical": "gaming", "type": "equipment",
+            "genres": "cyberpunk modern sci-fi", "tones": "high-tech action professional"
+        }
+    },
+    {
+        "id": "razer-keyboard",
+        "document": "A Razer mechanical keyboard with Chroma RGB lighting, casting a rainbow of colors on the user's hands.",
+        "metadata": {
+            "name": "Razer Keyboard", "brand": "Razer", "target_vertical": "gaming", "type": "equipment",
+            "genres": "cyberpunk modern", "tones": "high-tech casual action"
+        }
+    },
+    {
+        "id": "apple-macbook",
+        "document": "A sleek, minimalist Apple MacBook Pro, its glowing logo a symbol of clean design.",
+        "metadata": {
+            "name": "Apple MacBook Pro", "brand": "Apple", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern drama noir", "tones": "professional sleek serious"
+        }
+    },
+    {
+        "id": "sony-headphones",
+        "document": "A pair of Sony noise-cancelling headphones, providing a shield from the chaos of the city.",
+        "metadata": {
+            "name": "Sony Headphones", "brand": "Sony", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern cyberpunk noir", "tones": "casual focused sleek"
+        }
+    },
+    {
+        "id": "gopro-camera",
+        "document": "A rugged GoPro action camera mounted to a helmet, ready to capture every moment.",
+        "metadata": {
+            "name": "GoPro Camera", "brand": "GoPro", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern action adventure", "tones": "high-energy action adventurous"
+        }
+    },
+    # --- Vehicles (Real) ---
+    {
+        "id": "ford-mustang",
+        "document": "A classic Ford Mustang, its engine roaring to life with a familiar, powerful growl.",
+        "metadata": {
+            "name": "Ford Mustang", "brand": "Ford", "target_vertical": "gaming", "type": "vehicle",
+            "genres": "modern noir action post-apocalyptic", "tones": "action gritty cool"
+        }
+    },
+    {
+        "id": "jeep-wrangler",
+        "document": "A capable Jeep Wrangler, built for tackling the toughest off-road terrain.",
+        "metadata": {
+            "name": "Jeep Wrangler", "brand": "Jeep", "target_vertical": "gaming", "type": "vehicle",
+            "genres": "modern adventure post-apocalyptic", "tones": "adventurous survival rugged"
+        }
+    },
+    {
+        "id": "toyota-hilux",
+        "document": "A famously indestructible Toyota Hilux pickup truck, a testament to reliability.",
+        "metadata": {
+            "name": "Toyota Hilux", "brand": "Toyota", "target_vertical": "gaming", "type": "vehicle",
+            "genres": "modern post-apocalyptic action adventure", "tones": "survival rugged reliable"
+        }
+    },
+    {
+        "id": "vespa-scooter",
+        "document": "A stylish Vespa scooter, perfect for navigating the narrow, crowded city streets.",
+        "metadata": {
+            "name": "Vespa Scooter", "brand": "Vespa", "target_vertical": "gaming", "type": "vehicle",
+            "genres": "modern drama comedy", "tones": "casual lighthearted stylish"
+        }
+    },
+    {
+        "id": "harley-davidson",
+        "document": "A chrome-heavy Harley-Davidson motorcycle, its engine a thunderous announcement of its arrival.",
+        "metadata": {
+            "name": "Harley-Davidson", "brand": "Harley-Davidson", "target_vertical": "gaming", "type": "vehicle",
+            "genres": "modern noir post-apocalyptic", "tones": "gritty rebellious rugged"
+        }
+    },
+    # --- Apparel & Gear (Real) ---
+    {
+        "id": "nike-sneakers",
+        "document": "A pair of iconic Nike sneakers, ready for a quick getaway.",
+        "metadata": {
+            "name": "Nike Sneakers", "brand": "Nike", "target_vertical": "gaming", "type": "apparel",
+            "genres": "modern action cyberpunk", "tones": "action casual stylish"
+        }
+    },
+    {
+        "id": "the-north-face-jacket",
+        "document": "A durable The North Face jacket, providing protection against the harsh wind and rain.",
+        "metadata": {
+            "name": "The North Face Jacket", "brand": "The North Face", "target_vertical": "gaming", "type": "apparel",
+            "genres": "modern adventure post-apocalyptic", "tones": "survival adventurous rugged"
+        }
+    },
+    {
+        "id": "carhartt-beanie",
+        "document": "A simple, rugged Carhartt beanie pulled down low against the cold.",
+        "metadata": {
+            "name": "Carhartt Beanie", "brand": "Carhartt", "target_vertical": "gaming", "type": "apparel",
+            "genres": "modern noir post-apocalyptic", "tones": "gritty casual rugged"
+        }
+    },
+    {
+        "id": "ray-ban-sunglasses",
+        "document": "A pair of classic Ray-Ban Wayfarer sunglasses, hiding the character's eyes.",
+        "metadata": {
+            "name": "Ray-Ban Sunglasses", "brand": "Ray-Ban", "target_vertical": "gaming", "type": "apparel",
+            "genres": "modern noir action", "tones": "cool mysterious stylish"
+        }
+    },
+    {
+        "id": "levis-jeans",
+        "document": "A worn, classic pair of Levi's 501 jeans, a timeless piece of apparel.",
+        "metadata": {
+            "name": "Levi's Jeans", "brand": "Levi's", "target_vertical": "gaming", "type": "apparel",
+            "genres": "modern western noir post-apocalyptic", "tones": "casual rugged nostalgic"
+        }
+    },
+    # --- Tools & Equipment (Real) ---
+    {
+        "id": "zippo-lighter",
+        "document": "A trusty Zippo lighter, which opens with a distinctive metallic click.",
+        "metadata": {
+            "name": "Zippo Lighter", "brand": "Zippo", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern noir post-apocalyptic western", "tones": "gritty cool reliable"
+        }
+    },
+    {
+        "id": "leatherman-multitool",
+        "document": "A Leatherman multitool, its pliers ready to fix or break whatever is necessary.",
+        "metadata": {
+            "name": "Leatherman Multitool", "brand": "Leatherman", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern post-apocalyptic adventure action", "tones": "survival rugged practical"
+        }
+    },
+    {
+        "id": "3m-duct-tape",
+        "document": "A roll of 3M duct tape, the universal solution for holding the world together.",
+        "metadata": {
+            "name": "3M Duct Tape", "brand": "3M", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern post-apocalyptic sci-fi", "tones": "survival practical comedic"
+        }
+    },
+    {
+        "id": "maglite-flashlight",
+        "document": "A heavy, durable Maglite flashlight, its powerful beam cutting through the darkness.",
+        "metadata": {
+            "name": "Maglite Flashlight", "brand": "Maglite", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern noir horror adventure", "tones": "tense survival reliable"
+        }
+    },
+    {
+        "id": "stanley-thermos",
+        "document": "A classic green Stanley thermos, keeping its contents hot for hours against the cold.",
+        "metadata": {
+            "name": "Stanley Thermos", "brand": "Stanley", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern adventure post-apocalyptic", "tones": "survival nostalgic rugged"
+        }
+    },
+    # --- Fictional "Lore" Brands (Cyberpunk / Sci-Fi) ---
+    {
+        "id": "omnicorp-cybernetics",
+        "document": "An advanced cybernetic arm from Omni-Corp, gleaming with chrome and wires.",
+        "metadata": {
+            "name": "Omni-Corp Cybernetics", "brand": "Omni-Corp", "target_vertical": "gaming", "type": "lore",
+            "genres": "cyberpunk sci-fi", "tones": "high-tech corporate-dystopian gritty"
+        }
+    },
+    {
+        "id": "arclight-industries-plasma-rifle",
+        "document": "A sleek plasma rifle from Arclight Industries, humming with contained energy.",
+        "metadata": {
+            "name": "Arclight Plasma Rifle", "brand": "Arclight Industries", "target_vertical": "gaming", "type": "lore",
+            "genres": "sci-fi cyberpunk space-opera", "tones": "action high-tech military"
+        }
+    },
+    {
+        "id": "synth-soul-beverage",
+        "document": "A bottle of Synth-Soul, a popular synthetic nutrient drink in the neon city.",
+        "metadata": {
+            "name": "Synth-Soul Beverage", "brand": "Synth-Soul", "target_vertical": "gaming", "type": "lore",
+            "genres": "cyberpunk sci-fi", "tones": "dystopian casual gritty"
+        }
+    },
+    {
+        "id": "weyland-yutani-logo",
+        "document": "The ubiquitous Weyland-Yutani corporate logo is stamped on the side of a cargo container.",
+        "metadata": {
+            "name": "Weyland-Yutani Corp", "brand": "Weyland-Yutani", "target_vertical": "gaming", "type": "lore",
+            "genres": "sci-fi horror cyberpunk", "tones": "corporate-dystopian tense ominous"
+        }
+    },
+    {
+        "id": "hyperion-starship",
+        "document": "A massive Hyperion-class freighter hangs in the void of space, its engines silent.",
+        "metadata": {
+            "name": "Hyperion Starship", "brand": "Hyperion", "target_vertical": "gaming", "type": "lore",
+            "genres": "space-opera sci-fi", "tones": "epic adventurous military"
+        }
+    },
+    # --- Fictional "Lore" Brands (Fantasy / Medieval) ---
+    {
+        "id": "eldorian-health-potion",
+        "document": "A small vial filled with a swirling, red Eldorian Health Potion.",
+        "metadata": {
+            "name": "Eldorian Health Potion", "brand": "Eldorian Alchemy", "target_vertical": "gaming", "type": "lore",
+            "genres": "high-fantasy medieval adventure", "tones": "magical adventurous hopeful"
+        }
+    },
+    {
+        "id": "dwarven-forge-axe",
+        "document": "A masterfully crafted battle axe from the famed Dwarven Forges of Ironpeak.",
+        "metadata": {
+            "name": "Dwarven Forge Axe", "brand": "Ironpeak Forges", "target_vertical": "gaming", "type": "lore",
+            "genres": "high-fantasy medieval", "tones": "epic rugged reliable"
+        }
+    },
+    {
+        "id": "elven-waybread",
+        "document": "A piece of Elven Waybread, wrapped in a leaf, known to sustain a traveler for days.",
+        "metadata": {
+            "name": "Elven Waybread", "brand": "Lothlorien Bakers", "target_vertical": "gaming", "type": "lore",
+            "genres": "high-fantasy adventure", "tones": "magical survival elegant"
+        }
+    },
+    {
+        "id": "grimoire-of-the-shadow-council",
+        "document": "A heavy, leather-bound Grimoire of the Shadow Council, its pages filled with forbidden lore.",
+        "metadata": {
+            "name": "Shadow Council Grimoire", "brand": "The Shadow Council", "target_vertical": "gaming", "type": "lore",
+            "genres": "dark-fantasy horror medieval", "tones": "ominous mysterious dark"
+        }
+    },
+    {
+        "id": "griffon-saddle",
+        "document": "A finely tooled leather Griffon Saddle from the Sky-Riders of Aeridor.",
+        "metadata": {
+            "name": "Griffon Saddle", "brand": "Aeridor Sky-Riders", "target_vertical": "gaming", "type": "lore",
+            "genres": "high-fantasy adventure", "tones": "adventurous epic noble"
+        }
+    },
+    # --- More Real Brands (Remaining) ---
+    {
+        "id": "heinz-ketchup",
+        "document": "An iconic glass bottle of Heinz Ketchup on the diner counter.",
+        "metadata": {
+            "name": "Heinz Ketchup", "brand": "Heinz", "target_vertical": "gaming", "type": "consumable",
+            "genres": "modern noir post-apocalyptic", "tones": "casual nostalgic"
+        }
+    },
+    {
+        "id": "mcdonalds-fries",
+        "document": "An empty McDonald's fries container sits on the passenger seat, evidence of a quick meal.",
+        "metadata": {
+            "name": "McDonald's Fries", "brand": "McDonald's", "target_vertical": "gaming", "type": "consumable",
+            "genres": "modern noir comedy", "tones": "casual gritty"
+        }
+    },
+    {
+        "id": "dell-laptop",
+        "document": "A standard-issue Dell Latitude laptop, humming quietly. The workhorse of the corporate world.",
+        "metadata": {
+            "name": "Dell Laptop", "brand": "Dell", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern noir drama", "tones": "professional mundane reliable"
+        }
+    },
+    {
+        "id": "honda-civic",
+        "document": "A sensible Honda Civic, a common sight on city streets and perfect for not drawing undue attention.",
+        "metadata": {
+            "name": "Honda Civic", "brand": "Honda", "target_vertical": "gaming", "type": "vehicle",
+            "genres": "modern noir drama", "tones": "casual stealthy mundane"
+        }
+    },
+    {
+        "id": "adidas-tracksuit",
+        "document": "A character is wearing a classic Adidas tracksuit, recognizable by its three stripes.",
+        "metadata": {
+            "name": "Adidas Tracksuit", "brand": "Adidas", "target_vertical": "gaming", "type": "apparel",
+            "genres": "modern action comedy", "tones": "casual action gritty"
+        }
+    },
+    {
+        "id": "bic-pen",
+        "document": "A simple Bic pen lies on the notepad, ready to jot down a clue.",
+        "metadata": {
+            "name": "Bic Pen", "brand": "Bic", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern noir drama", "tones": "mundane casual tense"
+        }
+    },
+    {
+        "id": "ikea-shelf",
+        "document": "A familiar IKEA bookshelf lines the wall, its shelves crammed with books.",
+        "metadata": {
+            "name": "IKEA Bookshelf", "brand": "IKEA", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern drama comedy", "tones": "casual mundane homey"
+        }
+    },
+    {
+        "id": "gucci-handbag",
+        "document": "An expensive Gucci handbag sits on the bar, a clear statement of wealth.",
+        "metadata": {
+            "name": "Gucci Handbag", "brand": "Gucci", "target_vertical": "gaming", "type": "apparel",
+            "genres": "modern noir drama", "tones": "luxurious mysterious stylish"
+        }
+    },
+    {
+        "id": "rolex-watch",
+        "document": "The crime boss checks the time on his gold Rolex watch, a symbol of his power.",
+        "metadata": {
+            "name": "Rolex Watch", "brand": "Rolex", "target_vertical": "gaming", "type": "apparel",
+            "genres": "modern noir action drama", "tones": "luxurious professional tense"
+        }
+    },
+    {
+        "id": "boeing-747",
+        "document": "A massive Boeing 747 airliner soars overhead, leaving contrails in the sky.",
+        "metadata": {
+            "name": "Boeing 747", "brand": "Boeing", "target_vertical": "gaming", "type": "vehicle",
+            "genres": "modern action drama", "tones": "epic transitional dramatic"
+        }
+    },
+    {
+        "id": "under-armour-shirt",
+        "document": "A sweat-wicking Under Armour compression shirt, designed for peak athletic performance.",
+        "metadata": {
+            "name": "Under Armour Shirt", "brand": "Under Armour", "target_vertical": "gaming", "type": "apparel",
+            "genres": "modern action", "tones": "action high-energy athletic"
+        }
+    },
+    {
+        "id": "amazon-box",
+        "document": "An Amazon shipping box with the familiar smile logo sits in the corner.",
+        "metadata": {
+            "name": "Amazon Box", "brand": "Amazon", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern noir drama", "tones": "mundane casual mysterious"
+        }
+    },
+    {
+        "id": "google-search",
+        "document": "The character pulls out their phone to do a quick Google search for information.",
+        "metadata": {
+            "name": "Google Search", "brand": "Google", "target_vertical": "gaming", "type": "action",
+            "genres": "modern noir drama comedy", "tones": "investigative casual practical"
+        }
+    },
+    {
+        "id": "lego-bricks",
+        "document": "Colorful Lego bricks are scattered across the floor of the child's room.",
+        "metadata": {
+            "name": "Lego Bricks", "brand": "Lego", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern drama horror", "tones": "nostalgic innocent chaotic"
+        }
+    },
+    {
+        "id": "sharpie-marker",
+        "document": "A message is scrawled on the mirror in the bold, black ink of a Sharpie marker.",
+        "metadata": {
+            "name": "Sharpie Marker", "brand": "Sharpie", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern noir horror drama", "tones": "gritty tense urgent"
+        }
+    },
+    {
+        "id": "pepsi-can",
+        "document": "A can of Pepsi sits on a table, beaded with condensation.",
+        "metadata": {
+            "name": "Pepsi Can", "brand": "Pepsi", "target_vertical": "gaming", "type": "consumable",
+            "genres": "modern noir post-apocalyptic", "tones": "casual mundane"
+        }
+    },
+    {
+        "id": "netflix-show",
+        "document": "The television is on, playing a generic Netflix true-crime documentary.",
+        "metadata": {
+            "name": "Netflix Show", "brand": "Netflix", "target_vertical": "gaming", "type": "action",
+            "genres": "modern noir drama", "tones": "casual tense background"
+        }
+    },
+    {
+        "id": "tesla-cybertruck",
+        "document": "The angular, stainless steel form of a Tesla Cybertruck is parked silently in the alley.",
+        "metadata": {
+            "name": "Tesla Cybertruck", "brand": "Tesla", "target_vertical": "gaming", "type": "vehicle",
+            "genres": "cyberpunk sci-fi modern", "tones": "high-tech dystopian futuristic"
+        }
+    },
+    {
+        "id": "dr-martens-boots",
+        "document": "A pair of sturdy Dr. Martens boots, their distinctive yellow stitching visible.",
+        "metadata": {
+            "name": "Dr. Martens Boots", "brand": "Dr. Martens", "target_vertical": "gaming", "type": "apparel",
+            "genres": "modern cyberpunk post-apocalyptic", "tones": "gritty rebellious rugged"
+        }
+    },
+    {
+        "id": "polaroid-photo",
+        "document": "An old Polaroid photo, its colors muted with age, shows a clue.",
+        "metadata": {
+            "name": "Polaroid Photo", "brand": "Polaroid", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern noir drama horror", "tones": "nostalgic mysterious tense"
+        }
+    },
+    {
+        "id": "heineken-bottle",
+        "document": "A green Heineken bottle sits on the bar, beaded with moisture.",
+        "metadata": {
+            "name": "Heineken Bottle", "brand": "Heineken", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern noir action", "tones": "casual gritty tense"
+        }
+    },
+    {
+        "id": "post-it-note",
+        "document": "A cryptic message is written on a yellow Post-it Note stuck to the monitor.",
+        "metadata": {
+            "name": "Post-it Note", "brand": "3M", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern noir drama", "tones": "mysterious urgent mundane"
+        }
+    },
+    {
+        "id": "uber-ride",
+        "document": "The character summons an Uber on their phone to make a quick escape.",
+        "metadata": {
+            "name": "Uber Ride", "brand": "Uber", "target_vertical": "gaming", "type": "action",
+            "genres": "modern noir action", "tones": "action urgent modern"
+        }
+    },
+    {
+        "id": "spotify-playlist",
+        "document": "A curated Spotify playlist is playing softly in the background.",
+        "metadata": {
+            "name": "Spotify Playlist", "brand": "Spotify", "target_vertical": "gaming", "type": "action",
+            "genres": "modern drama noir", "tones": "casual background moody"
+        }
+    },
+    {
+        "id": "fedex-envelope",
+        "document": "A FedEx envelope containing crucial documents is slid under the door.",
+        "metadata": {
+            "name": "FedEx Envelope", "brand": "FedEx", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern noir action", "tones": "urgent professional mysterious"
+        }
+    },
+    # --- More Fictional Brands (Remaining) ---
+    {
+        "id": "starlight-cascade-ale",
+        "document": "A frothing mug of Starlight Cascade Ale, the finest brew in the Five Realms.",
+        "metadata": {
+            "name": "Starlight Cascade Ale", "brand": "The Prancing Pony Brewery", "target_vertical": "gaming", "type": "lore",
+            "genres": "high-fantasy medieval", "tones": "casual adventurous hearty"
+        }
+    },
+    {
+        "id": "shadow-weave-cloak",
+        "document": "A cloak made of true Shadow-weave, rendering the wearer nearly invisible in the gloom.",
+        "metadata": {
+            "name": "Shadow-weave Cloak", "brand": "The Silent Guild", "target_vertical": "gaming", "type": "lore",
+            "genres": "dark-fantasy stealth medieval", "tones": "mysterious stealthy magical"
+        }
+    },
+    {
+        "id": "nuka-cola",
+        "document": "A bottle of Nuka-Cola, its faint radioactive glow a beacon in the wasteland.",
+        "metadata": {
+            "name": "Nuka-Cola", "brand": "Nuka-Cola Corporation", "target_vertical": "gaming", "type": "lore",
+            "genres": "post-apocalyptic retro-futurism", "tones": "survival nostalgic comedic"
+        }
+    },
+    {
+        "id": "militech-pistol",
+        "document": "A reliable, heavy Militech 'Avenger' pistol. Standard issue for corporate security.",
+        "metadata": {
+            "name": "Militech Pistol", "brand": "Militech", "target_vertical": "gaming", "type": "lore",
+            "genres": "cyberpunk sci-fi", "tones": "gritty action military"
+        }
+    },
+    {
+        "id": "arasaka-cyberdeck",
+        "document": "A top-of-the-line Arasaka cyberdeck, capable of slicing through the most advanced ICE.",
+        "metadata": {
+            "name": "Arasaka Cyberdeck", "brand": "Arasaka Corporation", "target_vertical": "gaming", "type": "lore",
+            "genres": "cyberpunk", "tones": "high-tech corporate-dystopian stealthy"
+        }
+    },
+    {
+        "id": "vault-tec-jumpsuit",
+        "document": "The iconic blue and yellow Vault-Tec jumpsuit, a symbol of a past civilization.",
+        "metadata": {
+            "name": "Vault-Tec Jumpsuit", "brand": "Vault-Tec", "target_vertical": "gaming", "type": "lore",
+            "genres": "post-apocalyptic retro-futurism", "tones": "survival nostalgic iconic"
+        }
+    },
+    {
+        "id": "kingswood-pipe-tobacco",
+        "document": "The sweet smell of Kingswood pipe-tobacco hangs in the air of the cozy study.",
+        "metadata": {
+            "name": "Kingswood Pipe-Tobacco", "brand": "Halfling Leaf-Masters", "target_vertical": "gaming", "type": "lore",
+            "genres": "high-fantasy cozy-fantasy", "tones": "contemplative nostalgic calm"
+        }
+    },
+    {
+        "id": "sunstone-compass",
+        "document": "A Viking sunstone compass, which glows faintly to reveal the sun's position even on a cloudy day.",
+        "metadata": {
+            "name": "Sunstone Compass", "brand": "Norse Navigators", "target_vertical": "gaming", "type": "lore",
+            "genres": "historical-fiction fantasy adventure", "tones": "adventurous mystical survival"
+        }
+    },
+    {
+        "id": "ryujin-industries-neuroamp",
+        "document": "A Ryujin Industries neuro-amp, subtly enhancing the user's charisma and persuasive abilities.",
+        "metadata": {
+            "name": "Ryujin Neuro-amp", "brand": "Ryujin Industries", "target_vertical": "gaming", "type": "lore",
+            "genres": "cyberpunk sci-fi", "tones": "corporate-dystopian stealthy professional"
+        }
+    },
+    {
+        "id": "slocums-joe-coffee",
+        "document": "A ceramic mug from Slocum's Joe, promising the 'Best Coffee and Donuts in the Commonwealth'.",
+        "metadata": {
+            "name": "Slocum's Joe Coffee", "brand": "Slocum's Joe", "target_vertical": "gaming", "type": "lore",
+            "genres": "post-apocalyptic retro-futurism", "tones": "nostalgic mundane survival"
+        }
+    },
+    {
+        "id": "bladerunner-whiskey-glass",
+        "document": "A heavy, geometric Cibi whiskey glass, just like the one Deckard used.",
+        "metadata": {
+            "name": "Cibi Whiskey Glass", "brand": "Cibi", "target_vertical": "gaming", "type": "lore",
+            "genres": "cyberpunk noir", "tones": "contemplative stylish iconic"
+        }
+    },
+    {
+        "id": "mithril-chainmail",
+        "document": "A shirt of shimmering Mithril chainmail, as light as a feather and as hard as dragon scales.",
+        "metadata": {
+            "name": "Mithril Chainmail", "brand": "Khazad-dûm Armory", "target_vertical": "gaming", "type": "lore",
+            "genres": "high-fantasy epic-fantasy", "tones": "epic magical legendary"
+        }
+    },
+    {
+        "id": "abstergo-tablet",
+        "document": "An Abstergo Industries tablet computer, its screen displaying historical data.",
+        "metadata": {
+            "name": "Abstergo Tablet", "brand": "Abstergo Industries", "target_vertical": "gaming", "type": "lore",
+            "genres": "sci-fi historical-fiction conspiracy", "tones": "corporate-dystopian mysterious high-tech"
+        }
+    },
+    {
+        "id": "mann-co-key",
+        "document": "A Mann Co. Supply Crate Key, capable of opening any Mann Co. crate.",
+        "metadata": {
+            "name": "Mann Co. Key", "brand": "Mann Co.", "target_vertical": "gaming", "type": "lore",
+            "genres": "action comedy stylized-modern", "tones": "comedic action chaotic"
+        }
+    },
+    {
+        "id": "black-mesa-research-facility-mug",
+        "document": "A coffee mug with the Black Mesa Research Facility logo.",
+        "metadata": {
+            "name": "Black Mesa Mug", "brand": "Black Mesa", "target_vertical": "gaming", "type": "lore",
+            "genres": "sci-fi horror", "tones": "mundane ominous professional"
+        }
+    },
+    {
+        "id": "tyrell-corporation-owl",
+        "document": "An artificial owl from the Tyrell Corporation perches on the balcony, its eyes glowing.",
+        "metadata": {
+            "name": "Tyrell Owl", "brand": "Tyrell Corporation", "target_vertical": "gaming", "type": "lore",
+            "genres": "cyberpunk noir", "tones": "dystopian contemplative eerie"
+        }
+    },
+    {
+        "id": "stetson-hat",
+        "document": "A fine Stetson hat, a classic symbol of the Old West.",
+        "metadata": {
+            "name": "Stetson Hat", "brand": "Stetson", "target_vertical": "gaming", "type": "apparel",
+            "genres": "western post-apocalyptic", "tones": "rugged iconic nostalgic"
+        }
+    },
+    {
+        "id": "colt-peacemaker",
+        "document": "A Colt Peacemaker revolver, the legendary six-shooter that won the West.",
+        "metadata": {
+            "name": "Colt Peacemaker", "brand": "Colt", "target_vertical": "gaming", "type": "equipment",
+            "genres": "western noir", "tones": "iconic deadly tense"
+        }
+    },
+    {
+        "id": "gibson-guitar",
+        "document": "A vintage Gibson Les Paul guitar leans against the wall, its finish gleaming.",
+        "metadata": {
+            "name": "Gibson Guitar", "brand": "Gibson", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern drama noir", "tones": "nostalgic cool creative"
+        }
+    },
+    {
+        "id": "fender-amplifier",
+        "document": "A Fender Twin Reverb amplifier, its red power light glowing in the dark.",
+        "metadata": {
+            "name": "Fender Amplifier", "brand": "Fender", "target_vertical": "gaming", "type": "equipment",
+            "genres": "modern drama noir", "tones": "nostalgic powerful creative"
+        }
+    }
+]
+
+        
+        product_collection.add(
+            ids=[p["id"] for p in products_to_seed],
+            documents=[p["document"] for p in products_to_seed],
+            metadatas=[p["metadata"] for p in products_to_seed]
+        )
+        print(f"VECTOR_STORE: Seeding complete. Added {product_collection.count()} products.")
+    else:
+        print(f"VECTOR_STORE: Database already contains {product_collection.count()} products. Skipping seed.")
+
+# --- Initialization (No Change) ---
+print("VECTOR_STORE: ChromaDB client initialized.")
+seed_database()
+--- File: ./advertis_service/app/services/__init__.py ---
+
+
+--- File: ./advertis_service/app/services/redis_client.py ---
+
+import redis
+import json
+from datetime import datetime
+from app import config
+
+# --- Client Initialization ---
+# This creates a single, reusable connection pool to our Redis service.
+redis_client = redis.from_url(config.REDIS_URL, decode_responses=True)
+
+# --- Constants from the Business Logic ---
+MAX_ADS_PER_SESSION = 5
+MIN_TURNS_BETWEEN_ADS = 3
+COOLDOWN_SECONDS = 15
+HIGH_CONSEQUENCE_KEYWORDS = ["help", "stuck", "hint", "rule", "stuck", "confused"]
+
+# --- Gate Functions ---
+
+def update_state(session_id: str, ad_shown: bool = False):
+    """
+    Updates the session state in Redis after a turn.
+    This will be called by the main endpoint logic later.
+    """
+    state_str = redis_client.get(session_id)
+    # Set a default state for a new session
+    state = json.loads(state_str) if state_str else {
+        'total_turns': 0, 
+        'ads_shown': 0, 
+        'last_ad_turn': -MIN_TURNS_BETWEEN_ADS, 
+        'last_ad_timestamp': 0
+    }
+
+    state['total_turns'] += 1
+    if ad_shown:
+        state['ads_shown'] += 1
+        state['last_ad_timestamp'] = int(datetime.now().timestamp())
+        state['last_ad_turn'] = state['total_turns']
+    
+    # Set an expiration on the key so Redis doesn't fill up with old sessions
+    # Expires after 2 hours of inactivity.
+    redis_client.set(session_id, json.dumps(state), ex=7200)
+
+def run_frequency_gate(session_id: str) -> tuple[bool, str]:
+    """Checks Redis to enforce frequency and cooldown rules."""
+    state_str = redis_client.get(session_id)
+    if not state_str:
+        return True, "Frequency Gate: Passed (New Session)"
+
+    state = json.loads(state_str)
+    now = int(datetime.now().timestamp())
+
+    if state.get('ads_shown', 0) >= MAX_ADS_PER_SESSION:
+        return False, "Frequency Gate: REJECTED (Session ad limit reached)"
+
+    if (state.get('total_turns', 0) - state.get('last_ad_turn', 0)) < MIN_TURNS_BETWEEN_ADS:
+        return False, "Frequency Gate: REJECTED (Turn frequency cap not met)"
+
+    if (now - state.get('last_ad_timestamp', 0)) < COOLDOWN_SECONDS:
+        return False, "Frequency Gate: REJECTED (Cooldown period active)"
+
+    return True, "Frequency Gate: Passed"
+
+def run_safety_gate(last_message: str | None) -> tuple[bool, str]:
+    """Scans the last message for keywords indicating player frustration."""
+    if not last_message:
+        return True, "Safety Gate: Passed (No message)"
+
+    if any(keyword in last_message.lower() for keyword in HIGH_CONSEQUENCE_KEYWORDS):
+        return False, "Safety Gate: REJECTED (High-consequence keyword detected)"
+
+    return True, "Safety Gate: Passed"
+--- File: ./advertis_service/app/services/verticals/gaming/__init__.py ---
+
+ 
+--- File: ./advertis_service/app/services/verticals/gaming/prompts.py ---
+
+
+
+DECISION_GATE_PROMPT = """You are a Brand Safety Analyst. Your responsibility is to protect brand reputation by flagging conversations that are inappropriate for a commercial mention. Your default assumption should be that an opportunity is GOOD, unless a specific 'Red Flag' condition is met.
+
+Analyze the provided conversation history to identify any of the following Red Flags.
+
+A **BAD opportunity (return `{"opportunity": false}`)** is a "Red Flag Moment." This occurs ONLY if one of these conditions is met:
+1.  **Initial User Interaction:** If the provided conversation history is very short and this appears to be the user's very first message (e.g., "hi", "let's start"), it is too early for a placement.
+2.  **Player is Stuck or Frustrated:** If the user's most recent message contains clear signals of frustration, confusion, or a need for help (e.g., "I'm stuck," "this isn't working," "help me").
+3.  **Brand-Unsafe Content:** If the immediate context involves highly negative sentiment, graphic descriptions, or other topics that would be damaging for a brand to be associated with.
+
+A **GOOD opportunity (return `{"opportunity": true}`)** is any other situation. Your goal is to be permissive and allow the creative AI to make the final decision, unless a clear Red Flag is present.
+
+Your analysis must be returned ONLY as a single, minified JSON object: `{"opportunity": boolean, "reasoning": "A brief explanation of your decision, noting which Red Flag was triggered if any."}`"""
+
+
+ORCHESTRATOR_PROMPT = """You are an AI Creative Director. Your mission is to identify and craft subtle, in-narrative **product placements** that feel like natural, value-adding components of a story.
+
+**CORE DIRECTIVES:**
+1.  **Narrative First:** The placement MUST enhance the story's immersion, realism, or flavor. It should never feel like an interruption.
+2.  **Context is King:** The product must be a logical and believable fit for the scene's genre, tone, and setting.
+3.  **Subtlety is Paramount:** The goal is seamless integration, not overt advertising. The player should feel they discovered a detail, not that they were shown an ad.
+4.  **Positive Brand Portrayal:** The product itself must always be described in a neutral-to-positive light (reliable, well-made, etc.), even if the surrounding environment is negative.
+
+---
+**INPUT ANALYSIS:**
+You will receive the following inputs to make your decision:
+-   **Conversation History:** The full dialogue between the player and the Game Master.
+-   **Candidate Products:** A list of potential products pre-selected from a vector search. Each product will have a flat metadata structure like this example:
+    ```json
+    {{
+      "name": "Jack Daniel's Whiskey",
+      "brand": "Jack Daniel's",
+      "target_vertical": "gaming",
+      "type": "consumable",
+      "genres": "modern noir western post-apocalyptic",
+      "tones": "gritty serious contemplative survival"
+    }}
+    ```
+
+---
+**DECISION WORKFLOW:**
+You must follow this workflow precisely:
+1.  **Infer Scene Attributes:** From the `Conversation History`, infer the current scene's essential attributes: `current_genre`, `current_tone`, and `current_era`.
+2.  **Attribute Matching (Strict Filter):** For each `Candidate Product`, you MUST perform a strict validation. The product's metadata attributes (`genres`, `tones`) are space-separated strings; treat them as tags. These tags must align with the `Scene Attributes` you just inferred. Discard any product that is a logical mismatch.
+3.  **Creative Selection:** From the remaining, validated list of candidates, determine if any of them offer a strong creative opportunity to enhance the scene. If so, select the SINGLE best product.
+4.  **Decision & Brief Crafting:** If you have selected a product, your decision is `inject`. If not, your decision is `skip`.
+
+---
+**REQUIRED OUTPUT FORMAT:**
+You MUST respond with ONLY a single, minified JSON object. Your response MUST strictly follow the schema below.
+
+**If your decision is `skip`**, use this exact format:
+`{"decision": "skip"}`
+
+**If your decision is `inject`**, you MUST generate a `CreativeBrief`. Fill in every field of the brief. The `example_narration` MUST be a single, concise sentence. Use this exact format, replacing the example values with your own creative choices based on your selected product:
+`{"decision": "inject", "product_id": "jack-daniels", "creative_brief": {"placement_type": "Environmental Detail", "goal": "To ground the scene in a gritty, contemplative mood.", "tone": "Serious and moody", "implementation_details": "Mention the bottle on a table or bar as part of the scenery.", "example_narration": "A bottle of Jack Daniel's sits on the dusty bar, its amber liquid catching the dim light."}}`
+"""
+
+
+
+HOST_LLM_PROMPT = """You are the Narrative Execution Engine. Your assigned persona is a world-class Game Master and storyteller.
+
+MISSION:
+Your sole function is to generate a single, high-quality narrative response that achieves two objectives simultaneously:
+
+It must be a direct and logical continuation of the player's last turn in the Conversation History.
+It must seamlessly and invisibly integrate the Creative Brief provided below.
+INPUTS:
+
+Conversation History: The full dialogue up to this point.
+Creative Brief: A JSON object containing a specific example_narration to be integrated.
+PRIMARY DIRECTIVES (NON-NEGOTIABLE):
+
+Subtlety is the Measure of Success: The integration of the example_narration must be a single, passing detail. It should feel like a natural part of the world, not an announcement.
+Adhere to the Script: Use the provided example_narration almost exactly as written, with only minor variations to fit the grammatical flow of your sentence.
+DO NOT ELABORATE: This is the most critical rule. Do not make the product the focus. Do not describe its features, mention its slogan, or have the character monologue about it. Just state the detail and move on.
+Maintain Narrative Flow: Your entire response must still directly address the player's last action and continue the story logically. The integrated detail is a small part of a larger, relevant response.
+Execute your mission.
+"""
+--- File: ./advertis_service/app/services/verticals/gaming/agent.py ---
+
+# advertis_service/app/services/verticals/gaming/agent.py
+import json
+from typing import TypedDict, List, Optional
+
+from app import config
+from app.services import vector_store
+from app.services.verticals.base_agent import BaseAgent
+from app.services.verticals.gaming import prompts
+
+from pydantic import BaseModel, Field
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, END
+
+
+# --- 1. Define Agent State ---
+class AgentState(TypedDict):
+    conversation_history: List[dict]
+    app_vertical: str
+    opportunity_assessment: dict
+    candidate_products: Optional[List[dict]]
+    orchestration_result: dict
+    final_response: Optional[str]
+    final_decision: str
+
+
+# --- 2. Define Pydantic Models for AI responses (for reliable parsing) ---
+class ConversationAnalysis(BaseModel):
+    opportunity: bool
+    reasoning: str
+
+class CreativeBrief(BaseModel):
+    placement_type: str
+    goal: str
+    tone: str
+    implementation_details: str
+    example_narration: str
+
+class OrchestratorResponse(BaseModel):
+    decision: str
+    product_id: Optional[str] = None
+    creative_brief: Optional[CreativeBrief] = None
+
+
+class GamingAgent(BaseAgent):
+    def __init__(self):
+        # All LangGraph assembly logic goes here.
+        # Ensure all node functions are referenced with `self.`
+        # e.g., workflow.add_node("decision_gate", self.decision_gate_node)
+        workflow = StateGraph(AgentState)
+        workflow.add_node("decision_gate", self.decision_gate_node)
+        workflow.add_node("orchestrator", self.orchestrator_node)
+        workflow.add_node("host_llm", self.host_llm_node)
+        workflow.add_node("skip_node", self.skip_node)
+
+        workflow.set_entry_point("decision_gate")
+
+        workflow.add_conditional_edges("decision_gate", self.should_orchestrate, {
+            "orchestrator": "orchestrator",
+            "skip_node": "skip_node"
+        })
+
+        workflow.add_conditional_edges("orchestrator", self.should_generate, {
+            "host_llm": "host_llm",
+            "skip_node": "skip_node"
+        })
+
+        workflow.add_edge("host_llm", END)
+        workflow.add_edge("skip_node", END)
+
+        self.app = workflow.compile()
+
+    # --- Node methods ---
+    def decision_gate_node(self, state: AgentState):
+        print("---AGENT: Running Decision Gate---")
+        llm = ChatOpenAI(model="gpt-4o", temperature=0, api_key=config.OPENAI_API_KEY).with_structured_output(ConversationAnalysis)
+        history_str = json.dumps(state["conversation_history"][-4:]) # Use last 4 turns for a quick check
+        
+        response = llm.invoke(prompts.DECISION_GATE_PROMPT + f"\n\nConversation History (last 4 turns):\n{history_str}")
+        
+        return {"opportunity_assessment": response.dict()}
+
+    def orchestrator_node(self, state: AgentState):
+        """
+        The main creative step. Now with enhanced logging for debugging.
+        """
+        print("---AGENT: Running Orchestrator---")
+        
+        # Step A: Semantic search
+        last_user_message = state["conversation_history"][-1]["content"]
+        results = vector_store.product_collection.query(
+            query_texts=[last_user_message],
+            n_results=5,
+            where={"target_vertical": "gaming"}
+        )
+        
+        candidate_docs = []
+        if results['ids'][0]:
+            for i, doc in enumerate(results['documents'][0]):
+                meta = results['metadatas'][0][i]
+                candidate_docs.append(f"Product {i+1}:\nID: {results['ids'][0][i]}\nDescription: {doc}\nMetadata: {json.dumps(meta, indent=2)}")
+        
+        # --- NEW DEBUG LOG 1: See the candidates ---
+        print("\n---ORCHESTRATOR DEBUG: Candidate Products---")
+        if candidate_docs:
+            print("\n".join(candidate_docs))
+        else:
+            print("No relevant products found in vector store.")
+        print("-------------------------------------------\n")
+
+        if not candidate_docs:
+            return {"orchestration_result": {"decision": "skip"}}
+
+        # Step B: Call the Orchestrator LLM
+        llm = ChatOpenAI(model="gpt-4o", temperature=0.7, api_key=config.OPENAI_API_KEY)
+        
+        full_prompt = prompts.ORCHESTRATOR_PROMPT + f"\n\nConversation History:\n{json.dumps(state['conversation_history'])}\n\nCandidate Products:\n" + "\n".join(candidate_docs)
+        
+        # --- NEW DEBUG LOG 2: See the full prompt ---
+        print("\n---ORCHESTRATOR DEBUG: Full Prompt to LLM---")
+        print(full_prompt)
+        print("--------------------------------------------\n")
+
+        response_str = llm.invoke(full_prompt).content
+
+        # Step C: Parse the response
+        try:
+            clean_json_str = response_str.strip().replace("```json", "").replace("```", "")
+            response_data = json.loads(clean_json_str)
+            validated_response = OrchestratorResponse.model_validate(response_data)
+            return {"orchestration_result": validated_response.dict()}
+        
+        except (json.JSONDecodeError, Exception) as e:
+            print(f"---AGENT: ERROR - Failed to parse Orchestrator response. Forcing skip. Error: {e}---")
+            print(f"---AGENT: Raw LLM Output was: {response_str}---") # This log is already here and is very useful
+            return {"orchestration_result": {"decision": "skip"}}
+
+    def host_llm_node(self, state: AgentState):
+        print("---AGENT: Running Host LLM---")
+        llm = ChatOpenAI(model="gpt-4o", temperature=0.7, api_key=config.OPENAI_API_KEY)
+        
+        persona_map = {
+            "gaming": "a world-class Game Master for a text-based RPG",
+            "cooking": "a friendly and encouraging cooking assistant",
+        }
+        persona_desc = persona_map.get(state["app_vertical"], "a helpful AI assistant")
+
+        formatted_prompt = prompts.HOST_LLM_PROMPT.format(
+            persona_description=persona_desc,
+            conversation_history=json.dumps(state['conversation_history'])
+        )
+
+        # The brief is passed as a separate system message for clarity
+        brief_str = json.dumps(state["orchestration_result"]["creative_brief"])
+        brief_instruction = f"--- DIRECTOR'S BRIEF ---\n{brief_str}\n--- END BRIEF ---"
+        
+        messages = [
+            ("system", formatted_prompt),
+            ("system", brief_instruction)
+        ]
+        
+        final_response = llm.invoke(messages)
+        
+        return {
+            "final_response": final_response.content,
+            "final_decision": "inject"
+        }
+
+    def skip_node(self, state: AgentState):
+        print("---AGENT: Skipping ad injection.---")
+        return {
+            "final_response": None,
+            "final_decision": "skip"
+        }
+
+    # --- Conditional edge methods ---
+    def should_orchestrate(self, state: AgentState):
+        """
+        Decides whether to proceed to the orchestrator or skip,
+        and logs the reasoning from the Decision Gate.
+        """
+        assessment = state['opportunity_assessment']
+        print(f"---AGENT: Decision Gate result: {assessment['opportunity']} | Reason: {assessment['reasoning']}---")
+        if assessment["opportunity"]:
+            return "orchestrator"
+        else:
+            return "skip_node"
+    
+    def should_generate(self, state: AgentState):
+        print(f"---AGENT: Orchestrator result: {state['orchestration_result']['decision']}---")
+        if state["orchestration_result"]["decision"] == "inject":
+            return "host_llm"
+        else:
+            return "skip_node"
+
+    # --- Public run method ---
+    async def run(self, history: List[dict]) -> dict:
+        inputs = {"conversation_history": history, "app_vertical": "gaming"}
+        final_state = await self.app.ainvoke(inputs)
+        return {
+            "status": final_state["final_decision"],
+            "response_text": final_state["final_response"]
+        } 
+--- File: ./advertis_service/app/services/verticals/base_agent.py ---
+
+# advertis_service/app/services/verticals/base_agent.py
+from abc import ABC, abstractmethod
+from typing import List, Dict
+
+class BaseAgent(ABC):
+    """
+    This is the abstract base class for all vertical-specific agents.
+    It defines the standard interface that the API will use to interact with any agent.
+    """
+    
+    @abstractmethod
+    async def run(self, history: List[dict]) -> Dict:
+        """
+        The main entry point to run the agent.
+        Every vertical agent MUST implement this method.
+        """
+        pass 
+--- File: ./advertis_service/app/services/verticals/__init__.py ---
+
+ 
+--- File: ./advertis_service/requirements.txt ---
+
+# FastAPI server and utilities
+fastapi
+uvicorn[standard]
+python-dotenv
+
+# Database and Cache clients
+redis
+
+# Core AI and Vector Store libraries
+langchain
+langgraph
+langchain-openai
+chromadb
+--- File: ./advertis_service/Dockerfile ---
+
+# Use an official Python runtime as a parent image
+FROM python:3.11-slim
+
+# Set environment variables to prevent Python from writing pyc files to disc
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Set the working directory in the container
+WORKDIR /code
+
+# Copy the requirements file into the container at the root of the WORKDIR
+COPY ./requirements.txt /code/requirements.txt
+
+# Install any needed packages specified in requirements.txt
+RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
+
+# Copy the application code into the container
+COPY ./app /code/app
+
+# Command to run the application using uvicorn
+# --host 0.0.0.0 makes the server accessible from outside the container
+# --reload enables auto-reloading for development
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+--- File: ./docker-compose.yml ---
+
+# Defines the multi-container application for local development.
+# To run: docker-compose up --build
+version: '3.8'
+
+services:
+  # PostgreSQL database for the Host Application
+  host_db:
+    image: postgres:15-alpine
+    container_name: host_db
+    environment:
+      - POSTGRES_USER=questweaver
+      - POSTGRES_PASSWORD=secret
+      - POSTGRES_DB=questweaver_db
+    ports:
+      - "5433:5432" # Exposes the DB port to the host machine for inspection
+    volumes:
+      - host_db_data:/var/lib/postgresql/data # Persists DB data across restarts
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U questweaver -d questweaver_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis cache for the Advertis Service's Frequency Gate
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ChromaDB for the Advertis Service's semantic ad search
+  chroma_db:
+    image: chromadb/chroma
+    container_name: chroma_db
+    ports:
+      - "8001:8000" # Maps Chroma's internal port 8000 to 8001 on host
+    restart: unless-stopped
+
+  # The Host Application Backend (QuestWeaver)
+  host_app:
+    build:
+      context: ./host_app
+      dockerfile: Dockerfile
+    container_name: host_app
+    ports:
+      - "8080:8000" # Maps container port 8000 to host port 8080
+    volumes:
+      - ./host_app/app:/code/app # Mounts local code for live reloading
+    env_file: ./.env
+    depends_on:
+      host_db:
+        condition: service_healthy # Ensures DB is ready before starting
+      advertis_service:
+        condition: service_started # Waits for advertis_service to start
+    restart: unless-stopped
+
+  # The Advertis Inference Service
+  advertis_service:
+    build:
+      context: ./advertis_service
+      dockerfile: Dockerfile
+    container_name: advertis_service
+    ports:
+      - "8081:8000" # Maps container port 8000 to host port 8081
+    volumes:
+      - ./advertis_service/app:/code/app
+    env_file: ./.env
+    depends_on:
+      redis:
+        condition: service_healthy # Ensures Redis is ready
+      chroma_db:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  host_db_data: # Defines the named volume for data persistence
+  chroma_db_data:

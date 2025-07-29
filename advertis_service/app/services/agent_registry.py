@@ -1,5 +1,5 @@
 # advertis_service/app/services/agent_registry.py
-from .verticals.gaming.agent import GamingAgent
+from app.services.verticals.gaming.agent import GamingAgent
 # from .verticals.cooking.agent import CookingAgent # Example for the future
 
 # Create a singleton instance of each agent

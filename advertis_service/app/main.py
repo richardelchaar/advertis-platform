@@ -1,7 +1,8 @@
 from fastapi import FastAPI, HTTPException
-from .models import CheckRequest, AdRequest, AdResponse
-from .services import redis_client
-from .services.agent_registry import get_agent
+# In advertis_service/app/main.py
+from app.models import CheckRequest, CheckResponse, AdRequest, AdResponse
+from app.services.agent_registry import get_agent
+from app.services import redis_client
 
 # Initialize the FastAPI app
 app = FastAPI(

@@ -10,5 +10,7 @@ DATABASE_URL = os.getenv("DATABASE_URL")
 # URL to connect to our other microservice
 ADVERTIS_API_URL = os.getenv("ADVERTIS_API_URL", "http://advertis_service:8000")
 
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
 if not DATABASE_URL:
     raise ValueError("FATAL: DATABASE_URL environment variable is missing.")

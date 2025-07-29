@@ -1,14 +1,14 @@
 import redis
 import json
 from datetime import datetime
-from .. import config # This imports the config.py file from the parent directory
+from app import config
 
 # --- Client Initialization ---
 # This creates a single, reusable connection pool to our Redis service.
 redis_client = redis.from_url(config.REDIS_URL, decode_responses=True)
 
 # --- Constants from the Business Logic ---
-MAX_ADS_PER_SESSION = 5
+MAX_ADS_PER_SESSION = 15
 MIN_TURNS_BETWEEN_ADS = 3
 COOLDOWN_SECONDS = 15
 HIGH_CONSEQUENCE_KEYWORDS = ["help", "stuck", "hint", "rule", "stuck", "confused"]

@@ -8,7 +8,7 @@ from sqlalchemy import (create_engine, Column, Integer, String,
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 
-from .. import config
+from app import config
 
 # --- Database Setup ---
 engine = create_engine(config.DATABASE_URL)
@@ -54,6 +54,19 @@ def init_db():
     print("DATABASE: Tables created successfully.")
 
 
+def get_or_create_dummy_user(db_session):
+    """Finds the dummy user with ID 1, or creates it if it doesn't exist."""
+    dummy_user = db_session.query(User).filter(User.id == 1).first()
+    if not dummy_user:
+        print("DATABASE: Dummy user not found. Creating...")
+        dummy_user = User(id=1, username="dummy_user")
+        db_session.add(dummy_user)
+        db_session.commit()
+        db_session.refresh(dummy_user)
+        print("DATABASE: Dummy user created.")
+    return dummy_user
+
+
 # --- Helper Functions (What our app will use) ---
 def get_db():
     """Dependency to get a DB session."""
@@ -64,22 +77,26 @@ def get_db():
         db.close()
 
 def create_chat_session(db_session, user_id: int, system_prompt: str, app_vertical: str) -> ChatSession:
-    """Creates a new chat session in the database."""
+    """Creates a new chat session and its initial system message in the database."""
+    # Step 1: Create the session object
     new_session = ChatSession(
         user_id=user_id,
         system_prompt=system_prompt,
         app_vertical=app_vertical
     )
     db_session.add(new_session)
-    # Also add the system prompt as the first message
+    db_session.commit()
+    db_session.refresh(new_session) # This populates the new_session.id from the DB
+
+    # Step 2: Now that the session has an ID, create the system message
     system_message = ChatMessage(
-        session_id=new_session.id, 
-        role="system", 
+        session_id=new_session.id,
+        role="system",
         content=system_prompt
     )
     db_session.add(system_message)
-    db_session.commit()
-    db_session.refresh(new_session)
+    db_session.commit() # Commit the new message
+
     return new_session
 
 def get_chat_history(db_session, session_id: uuid.UUID) -> List[Dict]:
