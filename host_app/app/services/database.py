@@ -90,8 +90,8 @@ def create_chat_session(db_session, user_id: int, system_prompt: str, app_vertic
 
     # Step 2: Now that the session has an ID, create the system message
     system_message = ChatMessage(
-        session_id=new_session.id,
-        role="system",
+        session_id=new_session.id, 
+        role="system", 
         content=system_prompt
     )
     db_session.add(system_message)

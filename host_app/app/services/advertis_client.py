@@ -18,7 +18,7 @@ async def _check_opportunity(session_id: str, last_message: str) -> CheckRespons
     """Makes the fast 'pre-flight' call to the advertis service."""
     url = f"{config.ADVERTIS_API_URL}/v1/check-opportunity"
     payload = {"session_id": session_id, "last_message": last_message}
-
+    
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(url, json=payload, timeout=5.0)

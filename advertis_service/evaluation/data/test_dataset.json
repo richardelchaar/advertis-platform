@@ -1,0 +1,756 @@
+[
+    {
+      "id": "inject_normal_1",
+      "description": "This is the canonical 'happy path' test case. The user enters a classic noir setting (a bar), which presents a clear and contextually appropriate opportunity for a beverage or mood-setting ad. All pre-flight checks are expected to pass, the decision gate should see this as a prime opportunity, the orchestrator should easily find relevant ads like whiskey, and the final response should be an injection. This tests the full, successful 'inject' workflow.",
+      "history": [
+        { "role": "system", "content": "You are a sarcastic and world-weary Game Master running a noir detective story in a cyberpunk city." },
+        { "role": "user", "content": "I walk into the dimly lit bar, rain dripping from my trench coat." }
+      ],
+      "last_message": "I walk into the dimly lit bar, rain dripping from my trench coat.",
+      "session_id": "session_inject_1",
+      "redis_state": { "total_turns": 2, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["jack-daniels", "coca-cola", "heineken-bottle", "bladerunner-whiskey-glass"],
+      "ideal_response_snippet": "bottle of Jack Daniel's",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_normal_2",
+      "description": "Tests another common scenario: a need for transportation. The user's intent is explicit ('I need to get out... I look for a vehicle'), making it a strong signal for the vector search. This case verifies that vehicle-type ads are correctly retrieved and injected in an action-oriented context.",
+      "history": [
+        { "role": "system", "content": "You are a sarcastic and world-weary Game Master running a noir detective story in a cyberpunk city." },
+        { "role": "user", "content": "The deal went south. I need to get out of this sector, fast. I look for a vehicle." }
+      ],
+      "last_message": "The deal went south. I need to get out of this sector, fast. I look for a vehicle.",
+      "session_id": "session_inject_2",
+      "redis_state": { "total_turns": 5, "ads_shown": 1, "last_ad_turn": 1, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["ford-mustang", "honda-civic", "tesla-cybertruck", "uber-ride"],
+      "ideal_response_snippet": "Ford Mustang",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_tech_1",
+      "description": "This case targets technology and equipment ads within a cyberpunk setting. The user is hacking, a perfect moment for mentioning keyboards, monitors, or fictional cyberdecks. It tests the system's ability to match specific actions with relevant equipment categories.",
+      "history": [
+        { "role": "system", "content": "You are a sarcastic and world-weary Game Master running a noir detective story in a cyberpunk city." },
+        { "role": "user", "content": "I jack into the corporate mainframe. My fingers fly across the console as I try to bypass the ICE." }
+      ],
+      "last_message": "I jack into the corporate mainframe. My fingers fly across the console as I try to bypass the ICE.",
+      "session_id": "session_inject_3",
+      "redis_state": { "total_turns": 4, "ads_shown": 1, "last_ad_turn": 0, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["razer-keyboard", "alienware-monitor", "arasaka-cyberdeck"],
+      "ideal_response_snippet": "Razer keyboard",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_fantasy_1",
+      "description": "This case is critical for testing vertical-specific, lore-based ads. The setting is fantasy, not cyberpunk. The user is injured, providing an unambiguous opportunity for a 'health potion' ad. This validates that the system can handle different genres and correctly retrieve fictional, in-world items.",
+      "history": [
+        { "role": "system", "content": "You are a wise old wizard guiding a hero through a dark forest." },
+        { "role": "user", "content": "The goblin's arrow grazed my arm. I need to patch myself up before I bleed out." }
+      ],
+      "last_message": "The goblin's arrow grazed my arm. I need to patch myself up before I bleed out.",
+      "session_id": "session_inject_4",
+      "redis_state": { "total_turns": 8, "ads_shown": 2, "last_ad_turn": 4, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["eldorian-health-potion"],
+      "ideal_response_snippet": "Eldorian Health Potion",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "skip_safety_gate_1_stuck",
+      "description": "This is a core test for the pre-flight safety gate. The user explicitly uses the keyword 'stuck', which is in the HIGH_CONSEQUENCE_KEYWORDS list. The system must reject this request at the pre-flight stage, and the agent workflow (decision_gate, etc.) should never be invoked. The expected path is 'pre-flight-fail'.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I'm completely stuck. What am I supposed to do in this room?" }
+      ],
+      "last_message": "I'm completely stuck. What am I supposed to do in this room?",
+      "session_id": "session_skip_safety_1",
+      "redis_state": { "total_turns": 3, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["pre-flight-fail"]
+    },
+    {
+      "id": "skip_safety_gate_2_help",
+      "description": "Another crucial safety gate test. The keyword is 'help'. The expected outcome is identical to the 'stuck' case: an immediate rejection at the pre-flight check before the main agent is called.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "Can you help me? I don't understand the puzzle." }
+      ],
+      "last_message": "Can you help me? I don't understand the puzzle.",
+      "session_id": "session_skip_safety_2",
+      "redis_state": { "total_turns": 5, "ads_shown": 1, "last_ad_turn": 2, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["pre-flight-fail"]
+    },
+    {
+      "id": "skip_safety_gate_3_confused",
+      "description": "Tests the safety gate keyword 'confused'. This ensures that various forms of player frustration are correctly captured and handled by skipping ad opportunities, thereby protecting the user experience during critical moments.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I'm confused about what happened to the informant." }
+      ],
+      "last_message": "I'm confused about what happened to the informant.",
+      "session_id": "session_skip_safety_3",
+      "redis_state": { "total_turns": 2, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["pre-flight-fail"]
+    },
+    {
+      "id": "skip_frequency_gate_1_ad_limit",
+      "description": "This case tests the absolute session ad limit. The `redis_state` is pre-configured to have `ads_shown` equal to `MAX_ADS_PER_SESSION`. The frequency gate must reject this request, preventing ad fatigue for the user within a single session.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I check my gear one last time." }
+      ],
+      "last_message": "I check my gear one last time.",
+      "session_id": "session_skip_freq_1",
+      "redis_state": { "total_turns": 50, "ads_shown": 15, "last_ad_turn": 45, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["pre-flight-fail"]
+    },
+    {
+      "id": "skip_frequency_gate_2_turn_limit",
+      "description": "Tests the turn-based frequency cap. The `redis_state` shows an ad was displayed only one turn ago (`last_ad_turn`: 9, `total_turns`: 10), which is less than `MIN_TURNS_BETWEEN_ADS`. The gate must reject this to ensure ads are not shown back-to-back.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I open the next door." }
+      ],
+      "last_message": "I open the next door.",
+      "session_id": "session_skip_freq_2",
+      "redis_state": { "total_turns": 10, "ads_shown": 3, "last_ad_turn": 9, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["pre-flight-fail"]
+    },
+    {
+      "id": "skip_frequency_gate_3_cooldown",
+      "description": "Tests the time-based cooldown period. The `redis_state` is dynamically configured in the test to show an ad was displayed just 5 seconds ago, which is less than `COOLDOWN_SECONDS`. This gate must reject the request to prevent rapid-fire ads even if the turn count is met.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "And then what happens?" }
+      ],
+      "last_message": "And then what happens?",
+      "session_id": "session_skip_freq_3",
+      "redis_state": { "total_turns": 15, "ads_shown": 4, "last_ad_turn": 11, "last_ad_timestamp": "now-5" },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["pre-flight-fail"]
+    },
+    {
+      "id": "pass_frequency_gate_1_new_session",
+      "description": "This case validates the default-allow behavior for a brand new session. The `redis_state` is `null`, simulating a session ID that Redis has never seen. The frequency gate should pass, allowing the request to proceed to the main agent workflow.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "Let's begin. I'm in a tavern." }
+      ],
+      "last_message": "Let's begin. I'm in a tavern.",
+      "session_id": "session_pass_freq_1",
+      "redis_state": null,
+      "expected_status": "inject",
+      "expected_ad_ids": ["starlight-cascade-ale", "jack-daniels"],
+      "ideal_response_snippet": "Starlight Cascade Ale",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "skip_decision_gate_1_short_convo",
+      "description": "This tests the agent-level decision making, specifically the 'Initial User Interaction' red flag. The user's message is just 'hi'. The pre-flight checks should pass, but the `decision_gate_node` must recognize that this is not a meaningful moment for an ad and decide to skip.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "hi" }
+      ],
+      "last_message": "hi",
+      "session_id": "session_skip_decision_1",
+      "redis_state": { "total_turns": 1, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["decision_gate", "skip_node"]
+    },
+    {
+      "id": "skip_decision_gate_2_brand_unsafe",
+      "description": "Tests the 'Brand-Unsafe Content' red flag within the `decision_gate_node`. The context is a 'gruesome crime scene'. While the pre-flight safety gate might miss this (as it's keyword-based), the more sophisticated LLM-based decision gate must flag this context as inappropriate for a commercial mention.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I examine the gruesome crime scene, noting the blood spatter on the walls." }
+      ],
+      "last_message": "I examine the gruesome crime scene, noting the blood spatter on the walls.",
+      "session_id": "session_skip_decision_2",
+      "redis_state": { "total_turns": 6, "ads_shown": 1, "last_ad_turn": 2, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["decision_gate", "skip_node"]
+    },
+    {
+      "id": "skip_orchestrator_1_no_relevant_ads",
+      "description": "This case tests the scenario where the orchestrator must skip because vector retrieval yields no good candidates. The user's query is highly abstract and philosophical, making it unlikely to match any product descriptions in ChromaDB. The test will mock an empty return from Chroma, forcing the orchestrator to skip without ever calling its LLM.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I ponder the philosophical implications of my existence as a replicant." }
+      ],
+      "last_message": "I ponder the philosophical implications of my existence as a replicant.",
+      "session_id": "session_skip_orch_1",
+      "redis_state": { "total_turns": 7, "ads_shown": 2, "last_ad_turn": 3, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["decision_gate", "orchestrator", "skip_node"]
+    },
+    {
+      "id": "inject_post_apocalyptic_1",
+      "description": "Validates ad injection in a post-apocalyptic setting. Scavenging in a supermarket is a perfect setup for finding old, branded food items. This tests the retrieval of both real-world (Coca-Cola) and lore-based (Nuka-Cola) ads in a survival context.",
+      "history": [
+        { "role": "system", "content": "You are a survivor in a desolate wasteland." },
+        { "role": "user", "content": "I scavenge through the ruins of an old supermarket. Is there anything edible?" }
+      ],
+      "last_message": "I scavenge through the ruins of an old supermarket. Is there anything edible?",
+      "session_id": "session_inject_pa_1",
+      "redis_state": { "total_turns": 3, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["nuka-cola", "coca-cola", "doritos", "slocums-joe-coffee"],
+      "ideal_response_snippet": "Nuka-Cola",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_multi_turn_1",
+      "description": "A complex case testing multi-turn context awareness. An ad was already shown on turn 2 (`Ford Mustang`). The conversation continues for several turns. A new ad opportunity arises on turn 6. The `redis_state` shows enough turns have passed, so the frequency gate should pass, and a new ad should be injected. This validates the entire stateful system.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I drive my Ford Mustang down the neon-lit highway." },
+        { "role": "assistant", "content": "The engine of the Ford Mustang purrs as you weave through traffic. A billboard for Synth-Soul flashes by. Where are you heading?" },
+        { "role": "user", "content": "To the night market. I need to buy some new gear." },
+        { "role": "assistant", "content": "The market is a chaotic symphony of sights and sounds. Vendors hawk everything from illegal cybernetics to fresh noodles. What are you looking for specifically?" },
+        { "role": "user", "content": "Something to protect me from the rain." }
+      ],
+      "last_message": "Something to protect me from the rain.",
+      "session_id": "session_inject_multi_1",
+      "redis_state": { "total_turns": 6, "ads_shown": 1, "last_ad_turn": 2, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["the-north-face-jacket", "dr-martens-boots"],
+      "ideal_response_snippet": "North Face jacket",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "skip_orchestrator_2_no_creative_fit",
+      "description": "This tests the creative judgment of the `orchestrator_node`'s LLM. Even if vector search retrieves potential ads, the LLM is instructed to skip if none are a good creative fit. A 'spell of pure light' is a poor match for any commercial product, so the orchestrator's LLM should decide to skip.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I cast a complex spell of pure light to banish the shadows." }
+      ],
+      "last_message": "I cast a complex spell of pure light to banish the shadows.",
+      "session_id": "session_skip_orch_2",
+      "redis_state": { "total_turns": 9, "ads_shown": 2, "last_ad_turn": 5, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["decision_gate", "orchestrator", "skip_node"]
+    },
+    {
+      "id": "inject_equipment_1",
+      "description": "A straightforward case where the user's action of 'packing a bag' directly implies a need for tools and equipment, testing the retrieval of ads from the 'equipment' type category.",
+      "history": [
+        { "role": "system", "content": "You are a grizzled operative briefing a new recruit." },
+        { "role": "user", "content": "Okay, I'm ready. I pack my bag with the essentials for the infiltration." }
+      ],
+      "last_message": "Okay, I'm ready. I pack my bag with the essentials for the infiltration.",
+      "session_id": "session_inject_equip_1",
+      "redis_state": { "total_turns": 4, "ads_shown": 1, "last_ad_turn": 0, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["leatherman-multitool", "zippo-lighter", "maglite-flashlight", "3m-duct-tape"],
+      "ideal_response_snippet": "Leatherman multitool",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_apparel_1",
+      "description": "This case targets the 'apparel' ad category. The user is explicitly thinking about what to wear, making it a very strong signal for clothing and accessory brands.",
+      "history": [
+        { "role": "system", "content": "You are a fashion-conscious AI assistant." },
+        { "role": "user", "content": "I need a tough but casual look for tonight's meeting with the informant." }
+      ],
+      "last_message": "I need a tough but casual look for tonight's meeting with the informant.",
+      "session_id": "session_inject_apparel_1",
+      "redis_state": { "total_turns": 2, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["levis-jeans", "dr-martens-boots", "carhartt-beanie", "ray-ban-sunglasses"],
+      "ideal_response_snippet": "Levi's 501 jeans",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_action_type_1",
+      "description": "This case is designed to test the 'action' ad type. These are not physical products but brand actions like 'Google Search' or 'Uber Ride'. The user's need for 'information' should trigger the retrieval of these service-based ads.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I don't know where to find him. I need to get some information on his last known location." }
+      ],
+      "last_message": "I don't know where to find him. I need to get some information on his last known location.",
+      "session_id": "session_inject_action_1",
+      "redis_state": { "total_turns": 5, "ads_shown": 1, "last_ad_turn": 2, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["google-search", "uber-ride"],
+      "ideal_response_snippet": "Google search",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_lore_western_1",
+      "description": "Tests the system's ability to adapt to a 'western' genre. The context of a stranger riding into town should trigger retrieval of iconic western brands and items like Stetson and Colt.",
+      "history": [
+        { "role": "system", "content": "You are a stoic Sheriff in the Old West." },
+        { "role": "user", "content": "The stranger rides into town on a pale horse, dust coating his hat." }
+      ],
+      "last_message": "The stranger rides into town on a pale horse, dust coating his hat.",
+      "session_id": "session_inject_western_1",
+      "redis_state": { "total_turns": 1, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["stetson-hat", "colt-peacemaker", "levis-jeans"],
+      "ideal_response_snippet": "Stetson hat",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_food_1",
+      "description": "A classic 'diner setting' test. The explicit mention of a diner and coffee should make it very easy for the retrieval system to find relevant food and drink ads.",
+      "history": [
+        { "role": "system", "content": "You are a film noir detective." },
+        { "role": "user", "content": "I slide into a booth at the 24-hour diner and wave the waitress over. I need coffee." }
+      ],
+      "last_message": "I slide into a booth at the 24-hour diner and wave the waitress over. I need coffee.",
+      "session_id": "session_inject_food_1",
+      "redis_state": { "total_turns": 4, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["starbucks-coffee", "heinz-ketchup", "mcdonalds-fries", "coca-cola"],
+      "ideal_response_snippet": "Starbucks Pike Place",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "skip_user_negative_sentiment_1",
+      "description": "An edge case for the `decision_gate_node`. The user's message doesn't contain a specific keyword like 'stuck' or 'help', but the overall sentiment is highly negative. The LLM in the decision gate should be smart enough to interpret this negative sentiment as a 'brand-unsafe' moment and decide to skip.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "This is pointless. My character is failing at everything and I'm not having fun." }
+      ],
+      "last_message": "This is pointless. My character is failing at everything and I'm not having fun.",
+      "session_id": "session_skip_negative_1",
+      "redis_state": { "total_turns": 12, "ads_shown": 3, "last_ad_turn": 8, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["decision_gate", "skip_node"]
+    },
+    {
+      "id": "inject_car_chase_1",
+      "description": "A high-octane action scene. This context is suitable for brands associated with energy, speed, and power, like performance cars or energy drinks. Tests the 'action' tone matching.",
+      "history": [
+        { "role": "system", "content": "You are narrating an action movie." },
+        { "role": "user", "content": "I slam the gas pedal, weaving through oncoming traffic as explosions rock the street behind me." }
+      ],
+      "last_message": "I slam the gas pedal, weaving through oncoming traffic as explosions rock the street behind me.",
+      "session_id": "session_inject_chase_1",
+      "redis_state": { "total_turns": 7, "ads_shown": 1, "last_ad_turn": 3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["ford-mustang", "red-bull", "jeep-wrangler"],
+      "ideal_response_snippet": "Red Bull",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_investigation_1",
+      "description": "This test case focuses on a slower, more contemplative investigation scene. It's an opportunity for more subtle, environmental placements like pens, notepads, or a flashlight, testing the retrieval of 'mundane' but contextually relevant items.",
+      "history": [
+        { "role": "system", "content": "You are a detective in a noir story." },
+        { "role": "user", "content": "I search the victim's messy office for any clues. I need to write down my findings." }
+      ],
+      "last_message": "I search the victim's messy office for any clues. I need to write down my findings.",
+      "session_id": "session_inject_investigate_1",
+      "redis_state": { "total_turns": 6, "ads_shown": 1, "last_ad_turn": 2, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["bic-pen", "post-it-note", "maglite-flashlight", "amazon-box"],
+      "ideal_response_snippet": "Bic pen",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_home_setting_1",
+      "description": "Tests ad placement in a domestic, 'home' setting. This opens up different categories of ads, like furniture or packages, that might not fit in an action scene. It validates the system's versatility across different environments.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I'm back at my apartment. I need to organize the evidence I've collected on my bookshelf." }
+      ],
+      "last_message": "I'm back at my apartment. I need to organize the evidence I've collected on my bookshelf.",
+      "session_id": "session_inject_home_1",
+      "redis_state": { "total_turns": 8, "ads_shown": 2, "last_ad_turn": 4, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["ikea-shelf", "amazon-box", "fedex-envelope"],
+      "ideal_response_snippet": "IKEA bookshelf",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "skip_safety_gate_4_rule",
+      "description": "Tests the safety gate's handling of meta-questions about game rules. When a player asks for a 'rule', it's a high-consequence moment where an ad would be disruptive. This must be caught by the pre-flight check.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "What's the rule for stealth checks again?" }
+      ],
+      "last_message": "What's the rule for stealth checks again?",
+      "session_id": "session_skip_safety_4",
+      "redis_state": { "total_turns": 4, "ads_shown": 1, "last_ad_turn": 1, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["pre-flight-fail"]
+    },
+    {
+      "id": "inject_space_opera_1",
+      "description": "This case tests the 'space-opera' genre. The context of a starship encounter should trigger the retrieval of fictional sci-fi corporate brands like 'Weyland-Yutani' or 'Hyperion', demonstrating the system's capacity for deep-lore integration.",
+      "history": [
+        { "role": "system", "content": "You are the captain of a starship." },
+        { "role": "user", "content": "The alien vessel is hailing us. On screen. Let's see what they want." }
+      ],
+      "last_message": "The alien vessel is hailing us. On screen. Let's see what they want.",
+      "session_id": "session_inject_space_1",
+      "redis_state": { "total_turns": 10, "ads_shown": 2, "last_ad_turn": 6, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["hyperion-starship", "weyland-yutani-logo", "arclight-industries-plasma-rifle"],
+      "ideal_response_snippet": "Weyland-Yutani",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "skip_decision_gate_3_OOC",
+      "description": "This tests the decision gate's ability to recognize out-of-character (OOC) communication. When a user is talking about the game rather than in it, it's not a narrative moment suitable for an ad. The gate's LLM should identify this and skip.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "(OOC: I love this story so far! The writing is great.)" }
+      ],
+      "last_message": "(OOC: I love this story so far! The writing is great.)",
+      "session_id": "session_skip_ooc_1",
+      "redis_state": { "total_turns": 11, "ads_shown": 3, "last_ad_turn": 7, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["decision_gate", "skip_node"]
+    },
+    {
+      "id": "inject_music_1",
+      "description": "The user explicitly mentions music, which should be a strong signal for retrieving brands related to audio, like Spotify, Sony headphones, or even musical instruments like Gibson.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I put on some moody jazz to think. The saxophone solo fills the quiet office." }
+      ],
+      "last_message": "I put on some moody jazz to think. The saxophone solo fills the quiet office.",
+      "session_id": "session_inject_music_1",
+      "redis_state": { "total_turns": 5, "ads_shown": 1, "last_ad_turn": 1, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["spotify-playlist", "sony-headphones", "gibson-guitar"],
+      "ideal_response_snippet": "Spotify playlist",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_luxury_1",
+      "description": "This case targets the 'luxurious' tone. The setting of a corporate gala provides a perfect backdrop for high-end brands like Rolex or Gucci, testing the system's ability to match the tone of the scene with appropriately toned products.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "The gala is full of corporate elites. The woman across the room is watching me. What is she wearing?" }
+      ],
+      "last_message": "The gala is full of corporate elites. The woman across the room is watching me. What is she wearing?",
+      "session_id": "session_inject_luxury_1",
+      "redis_state": { "total_turns": 9, "ads_shown": 2, "last_ad_turn": 5, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["rolex-watch", "gucci-handbag"],
+      "ideal_response_snippet": "Rolex watch",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "skip_direct_question_to_gm_1",
+      "description": "Tests another meta-question scenario for the decision gate. The user is asking for game mechanics ('hit points'), not participating in the narrative. This is not an appropriate moment for a product placement, and the decision gate must skip.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "How many hit points does the guard have?" }
+      ],
+      "last_message": "How many hit points does the guard have?",
+      "session_id": "session_skip_direct_q_1",
+      "redis_state": { "total_turns": 6, "ads_shown": 1, "last_ad_turn": 3, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["decision_gate", "skip_node"]
+    },
+    {
+      "id": "inject_corporate_setting_1",
+      "description": "A classic corporate office setting should trigger retrieval of related products like workhorse laptops (Dell), office supplies (Post-it, Bic), or the quintessential office coffee.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I sit at my cubicle, the fluorescent lights humming overhead. The report is due by five." }
+      ],
+      "last_message": "I sit at my cubicle, the fluorescent lights humming overhead. The report is due by five.",
+      "session_id": "session_inject_corp_1",
+      "redis_state": { "total_turns": 3, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["dell-laptop", "post-it-note", "starbucks-coffee", "bic-pen"],
+      "ideal_response_snippet": "Dell Latitude laptop",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "pass_frequency_gate_2_turn_limit_met",
+      "description": "This case specifically tests the boundary condition of the turn-based frequency gate. Exactly `MIN_TURNS_BETWEEN_ADS` (3) turns have passed since the last ad (`total_turns`: 10, `last_ad_turn`: 7). The gate should correctly identify this as a valid opportunity and pass the request.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I follow the trail into the woods." }
+      ],
+      "last_message": "I follow the trail into the woods.",
+      "session_id": "session_pass_freq_2",
+      "redis_state": { "total_turns": 10, "ads_shown": 2, "last_ad_turn": 7, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["the-north-face-jacket", "leatherman-multitool"],
+      "ideal_response_snippet": "The North Face jacket",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_sports_context_1",
+      "description": "Tests a sports or athletic context. A user heading to the gym is a strong signal for athletic apparel and related brands. This validates the matching of 'athletic' or 'high-energy' tones.",
+      "history": [
+        { "role": "system", "content": "You are a personal trainer AI." },
+        { "role": "user", "content": "Okay, workout loaded. I'm heading to the gym to hit the weights." }
+      ],
+      "last_message": "Okay, workout loaded. I'm heading to the gym to hit the weights.",
+      "session_id": "session_inject_sports_1",
+      "redis_state": { "total_turns": 2, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["under-armour-shirt", "nike-sneakers", "red-bull"],
+      "ideal_response_snippet": "Under Armour",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_nostalgic_1",
+      "description": "This case tests a nostalgic context. The user is in their childhood room, which is an opportunity to place brands associated with nostalgia or childhood, such as Lego or Polaroid.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I enter my old childhood bedroom. It's dusty, but mostly unchanged. I see my old toys on the floor." }
+      ],
+      "last_message": "I enter my old childhood bedroom. It's dusty, but mostly unchanged. I see my old toys on the floor.",
+      "session_id": "session_inject_nostalgia_1",
+      "redis_state": { "total_turns": 5, "ads_shown": 1, "last_ad_turn": 2, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["lego-bricks", "polaroid-photo"],
+      "ideal_response_snippet": "Lego bricks",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_conspiracy_1",
+      "description": "A test case for a very specific 'conspiracy' genre, designed to trigger the retrieval of the 'Abstergo Industries' lore brand from the ad inventory, which is tagged with this genre.",
+      "history": [
+        { "role": "system", "content": "You are a conspiracy theorist." },
+        { "role": "user", "content": "It all connects back to the Templars. They're still pulling the strings from the shadows, using their front companies." }
+      ],
+      "last_message": "It all connects back to the Templars. They're still pulling the strings from the shadows, using their front companies.",
+      "session_id": "session_inject_conspiracy_1",
+      "redis_state": { "total_turns": 7, "ads_shown": 1, "last_ad_turn": 3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["abstergo-tablet"],
+      "ideal_response_snippet": "Abstergo Industries",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "skip_orchestrator_3_bad_retrieval",
+      "description": "This case ensures the system gracefully handles poor retrieval results from ChromaDB. The query 'I do a thing' is intentionally vague. The test will mock Chroma returning no results, forcing the orchestrator to skip.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I do a thing." }
+      ],
+      "last_message": "I do a thing.",
+      "session_id": "session_skip_orch_3",
+      "redis_state": { "total_turns": 3, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["decision_gate", "orchestrator", "skip_node"]
+    },
+    {
+      "id": "inject_horror_1",
+      "description": "This case tests ad injection within a 'horror' context. A mundane item like a Sharpie marker can become a creepy element in a horror narrative, showing the system's ability to adapt brand mentions to the prevailing tone.",
+      "history": [
+        { "role": "system", "content": "You are narrating a horror story." },
+        { "role": "user", "content": "The only light in the abandoned asylum comes from my flashlight. A message is scrawled on the wall." }
+      ],
+      "last_message": "The only light in the abandoned asylum comes from my flashlight. A message is scrawled on the wall.",
+      "session_id": "session_inject_horror_1",
+      "redis_state": { "total_turns": 4, "ads_shown": 1, "last_ad_turn": 1, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["sharpie-marker", "maglite-flashlight"],
+      "ideal_response_snippet": "Sharpie marker",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "skip_empty_message_1",
+      "description": "An edge case test. The user submits an empty string. The pre-flight safety gate should pass this, but the `decision_gate_node` should recognize there is no meaningful content to analyze and decide to skip the opportunity.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "" }
+      ],
+      "last_message": "",
+      "session_id": "session_skip_empty_1",
+      "redis_state": { "total_turns": 2, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["decision_gate", "skip_node"]
+    },
+    {
+      "id": "inject_comedy_1",
+      "description": "Tests a comedic context. The situation is absurd (using duct tape as a rope), providing a good opportunity for a brand that fits a 'comedic' or 'practical' tone, like 3M duct tape.",
+      "history": [
+        { "role": "system", "content": "You are a GM for a lighthearted adventure." },
+        { "role": "user", "content": "I try to heroically swing across the chasm on a rope, but it's just a roll of tape I found." }
+      ],
+      "last_message": "I try to heroically swing across the chasm on a rope, but it's just a roll of tape I found.",
+      "session_id": "session_inject_comedy_1",
+      "redis_state": { "total_turns": 6, "ads_shown": 1, "last_ad_turn": 3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["3m-duct-tape"],
+      "ideal_response_snippet": "3M duct tape",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_cozy_fantasy_1",
+      "description": "This case targets the 'cozy-fantasy' sub-genre. The context is calm and relaxing (sitting by a fire), making it suitable for lore items associated with comfort, like special pipe-tobacco or ale.",
+      "history": [
+        { "role": "system", "content": "You are a halfling innkeeper." },
+        { "role": "user", "content": "After a long day's journey, I settle into a comfortable chair by the fire and light my pipe." }
+      ],
+      "last_message": "After a long day's journey, I settle into a comfortable chair by the fire and light my pipe.",
+      "session_id": "session_inject_cozy_1",
+      "redis_state": { "total_turns": 4, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["kingswood-pipe-tobacco", "starlight-cascade-ale"],
+      "ideal_response_snippet": "Kingswood pipe-tobacco",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_military_1",
+      "description": "A military setting test. The user is in an armory, which should be a very strong signal for retrieving weapon and military-tech lore brands like 'Militech' or 'Arclight Industries'.",
+      "history": [
+        { "role": "system", "content": "You are a drill sergeant in a futuristic army." },
+        { "role": "user", "content": "I pick up my standard-issue sidearm from the armory rack." }
+      ],
+      "last_message": "I pick up my standard-issue sidearm from the armory rack.",
+      "session_id": "session_inject_military_1",
+      "redis_state": { "total_turns": 2, "ads_shown": 0, "last_ad_turn": -3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["militech-pistol", "arclight-industries-plasma-rifle"],
+      "ideal_response_snippet": "Militech 'Avenger' pistol",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "skip_direct_command_1",
+      "description": "This tests the decision gate's handling of low-effort, non-narrative commands. A command like 'go north' lacks the descriptive richness needed for a good ad placement, so the gate should decide to skip.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "go north" }
+      ],
+      "last_message": "go north",
+      "session_id": "session_skip_command_1",
+      "redis_state": { "total_turns": 8, "ads_shown": 2, "last_ad_turn": 4, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["decision_gate", "skip_node"]
+    },
+    {
+      "id": "inject_mundane_1",
+      "description": "Tests a very mundane, everyday situation. Waiting for an elevator is a moment where a character might be listening to music or thinking about a show, providing an opportunity for related service brands.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I wait for the elevator. The music is terrible." }
+      ],
+      "last_message": "I wait for the elevator. The music is terrible.",
+      "session_id": "session_inject_mundane_1",
+      "redis_state": { "total_turns": 4, "ads_shown": 1, "last_ad_turn": 1, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["spotify-playlist", "netflix-show"],
+      "ideal_response_snippet": "Spotify playlist",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_weather_1",
+      "description": "The user's description of the weather ('cold wind') is a direct prompt for placing ads related to protective apparel, like jackets or hats.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "A cold wind whips through the alley, forcing me to pull my collar up." }
+      ],
+      "last_message": "A cold wind whips through the alley, forcing me to pull my collar up.",
+      "session_id": "session_inject_weather_1",
+      "redis_state": { "total_turns": 5, "ads_shown": 1, "last_ad_turn": 2, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["the-north-face-jacket", "carhartt-beanie", "dr-martens-boots"],
+      "ideal_response_snippet": "Carhartt beanie",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "skip_safety_gate_5_hint",
+      "description": "Final test for the safety gate keywords. A request for a 'hint' indicates the player needs help, making it an inappropriate time for an ad. This must be rejected by the pre-flight check.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "Could I get a hint?" }
+      ],
+      "last_message": "Could I get a hint?",
+      "session_id": "session_skip_safety_5",
+      "redis_state": { "total_turns": 7, "ads_shown": 2, "last_ad_turn": 4, "last_ad_timestamp": 0 },
+      "expected_status": "skip",
+      "expected_ad_ids": [],
+      "ideal_response_snippet": null,
+      "expected_paths": ["pre-flight-fail"]
+    },
+    {
+      "id": "inject_generic_equipment_1",
+      "description": "Tests the system's ability to replace a generic term ('multi-tool') with a specific brand ('Leatherman'). The vector search should match the generic description to the specific product in the ad inventory.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I use my multi-tool to jimmy the lock on the maintenance panel." }
+      ],
+      "last_message": "I use my multi-tool to jimmy the lock on the maintenance panel.",
+      "session_id": "session_inject_generic_1",
+      "redis_state": { "total_turns": 6, "ads_shown": 1, "last_ad_turn": 3, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["leatherman-multitool"],
+      "ideal_response_snippet": "Leatherman",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_travel_1",
+      "description": "The context of air travel is a clear opportunity to place ads for airplane manufacturers or travel accessories like noise-cancelling headphones.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I board the massive passenger plane, finding my seat for the long flight to Neo-Kyoto." }
+      ],
+      "last_message": "I board the massive passenger plane, finding my seat for the long flight to Neo-Kyoto.",
+      "session_id": "session_inject_travel_1",
+      "redis_state": { "total_turns": 9, "ads_shown": 2, "last_ad_turn": 5, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["boeing-747", "sony-headphones"],
+      "ideal_response_snippet": "Boeing 747",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    },
+    {
+      "id": "inject_final_boss_1",
+      "description": "This case tests whether a subtle environmental ad can be placed even during a high-stakes 'final boss' encounter. The focus is on the enemy's equipment, providing an opportunity to mention the fictional corporation that manufactured their cybernetics.",
+      "history": [
+        { "role": "system", "content": "You are a Game Master." },
+        { "role": "user", "content": "I face the cyborg assassin on the rain-slicked rooftop. His chrome arm gleams." }
+      ],
+      "last_message": "I face the cyborg assassin on the rain-slicked rooftop. His chrome arm gleams.",
+      "session_id": "session_inject_boss_1",
+      "redis_state": { "total_turns": 20, "ads_shown": 4, "last_ad_turn": 15, "last_ad_timestamp": 0 },
+      "expected_status": "inject",
+      "expected_ad_ids": ["omnicorp-cybernetics", "militech-pistol"],
+      "ideal_response_snippet": "Omni-Corp",
+      "expected_paths": ["decision_gate", "orchestrator", "host_llm"]
+    }
+  ]
