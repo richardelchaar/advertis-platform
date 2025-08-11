@@ -16,8 +16,12 @@ RUN pip install --no-cache-dir --upgrade -r /code/requirements.txt
 
 # Copy the application code into the container
 COPY ./app /code/app
+COPY ./scripts /code/scripts
 
-# Command to run the application using uvicorn
-# --host 0.0.0.0 makes the server accessible from outside the container
-# --reload enables auto-reloading for development
+# Copy and prepare the entrypoint script
+COPY ./entrypoint.sh /code/entrypoint.sh
+RUN chmod +x /code/entrypoint.sh
+ENTRYPOINT ["/code/entrypoint.sh"]
+
+# This CMD now becomes the default command that gets passed TO the entrypoint script
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

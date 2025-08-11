@@ -8,7 +8,7 @@ from sqlalchemy import (create_engine, Column, Integer, String,
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 
-from app import config
+from host_app.app import config
 
 # --- Database Setup ---
 engine = create_engine(config.DATABASE_URL)
@@ -110,5 +110,3 @@ def save_message(db_session, session_id: uuid.UUID, role: str, content: str):
     db_session.add(new_message)
     db_session.commit()
 
-# On module load, try to initialize the database.
-init_db()

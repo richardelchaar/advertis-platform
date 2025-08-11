@@ -2,7 +2,7 @@
 import httpx
 from typing import List, Dict, Optional, Callable, Awaitable
 from pydantic import BaseModel
-from app import config
+from host_app.app import config
 
 # --- Pydantic Models for Deserialization ---
 class CheckResponse(BaseModel):

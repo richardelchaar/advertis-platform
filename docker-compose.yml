@@ -41,6 +41,7 @@ services:
     container_name: chroma_db
     ports:
       - "8001:8000" # Maps Chroma's internal port 8000 to 8001 on host
+
     restart: unless-stopped
 
   # The Host Application Backend (QuestWeaver)

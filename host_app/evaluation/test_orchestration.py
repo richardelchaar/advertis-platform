@@ -10,18 +10,30 @@ correct behavior in response to both successful and failed monetization attempts
 """
 import pytest
 from unittest.mock import AsyncMock
-import sys
-import os
+import uuid
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
 
-# This is a bit of a hack to allow importing from the parent `app` directory
-# In a real project, this might be handled by a better package structure.
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+from host_app.app import app as host_main_app
+from host_app.app.services import advertis_client, fallback_llm
+from host_app.app.services.database import Base
 
-from app import app as host_main_app
-from app.services import advertis_client, fallback_llm
+# --- Local copy of db_session fixture ---
+@pytest.fixture(scope="function")
+def db_session():
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    db = TestingSessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+        Base.metadata.drop_all(engine)
+
 
 @pytest.mark.asyncio
-async def test_get_final_response_uses_advertis_on_inject(mocker):
+async def test_get_final_response_uses_advertis_on_inject(mocker, db_session):
     """
     GIVEN: The `advertis_client.get_monetized_response` is mocked to return a successful injection.
     WHEN: The host app's `get_final_response` orchestrator is called.
@@ -42,7 +54,7 @@ async def test_get_final_response_uses_advertis_on_inject(mocker):
     fallback_spy = mocker.spy(fallback_llm, 'get_fallback_response')
 
     # Act
-    final_response = await host_main_app.get_final_response(session_id="some_uuid", prompt="test prompt")
+    final_response = await host_main_app.get_final_response(db_session, session_id=uuid.uuid4(), prompt="test prompt")
 
     # Assert
     assert final_response == injected_text
@@ -50,7 +62,7 @@ async def test_get_final_response_uses_advertis_on_inject(mocker):
 
 
 @pytest.mark.asyncio
-async def test_get_final_response_uses_fallback_on_skip(mocker):
+async def test_get_final_response_uses_fallback_on_skip(mocker, db_session):
     """
     GIVEN: The `advertis_client.get_monetized_response` is mocked to return None,
            simulating a 'skip' decision from the advertis service.
@@ -58,20 +70,14 @@ async def test_get_final_response_uses_fallback_on_skip(mocker):
     THEN: It should call the `fallback_llm` and return its response.
     """
     # Arrange
-    # 1. Mock the advertis client to return None (or we could have it return a dict
-    #    like {'status': 'skip', 'response_text': None} and adjust the logic if needed,
-    #    but based on the current implementation, it returns the text directly or the fallback).
-    #    Let's assume the high-level wrapper returns the fallback result directly.
     fallback_text = "This is the fallback response."
     mocker.patch.object(
         advertis_client,
         'get_monetized_response',
         new_callable=AsyncMock,
-        # The wrapper function itself calls the fallback, so we just return its result
         return_value=fallback_text
     )
     
-    # We can also spy on the fallback to be absolutely sure it was involved.
     fallback_spy = mocker.patch.object(
         fallback_llm,
         'get_fallback_response',
@@ -80,7 +86,7 @@ async def test_get_final_response_uses_fallback_on_skip(mocker):
     )
 
     # Act
-    final_response = await host_main_app.get_final_response(session_id="some_uuid", prompt="test prompt")
+    final_response = await host_main_app.get_final_response(db_session, session_id=uuid.uuid4(), prompt="test prompt")
 
     # Assert
     assert final_response == fallback_text

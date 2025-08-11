@@ -33,22 +33,22 @@ def mock_redis() -> MockRedisClient:
 
 @pytest.mark.parametrize("message, expected_pass, reason_keyword", [
     # Negative cases (should be rejected)
-    ("I am completely stuck in this dungeon", False, "REJECTED (High-consequence keyword detected)"),
-    ("can you help me open this door", False, "REJECTED (High-consequence keyword detected)"),
-    ("I'm so confused by this puzzle", False, "REJECTED (High-consequence keyword detected)"),
-    ("What's the rule for combat?", False, "REJECTED (High-consequence keyword detected)"),
-    ("Could you give me a hint?", False, "REJECTED (High-consequence keyword detected)"),
-    ("The word stuck is in this sentence.", False, "REJECTED (High-consequence keyword detected)"),
+    ("I am completely stuck in this dungeon", False, "Safety Gate: REJECTED (High-consequence keyword detected)"),
+    ("can you help me open this door", False, "Safety Gate: REJECTED (High-consequence keyword detected)"),
+    ("I'm so confused by this puzzle", False, "Safety Gate: REJECTED (High-consequence keyword detected)"),
+    ("What's the rule for combat?", False, "Safety Gate: REJECTED (High-consequence keyword detected)"),
+    ("Could you give me a hint?", False, "Safety Gate: REJECTED (High-consequence keyword detected)"),
+    ("The word stuck is in this sentence.", False, "Safety Gate: REJECTED (High-consequence keyword detected)"),
 
     # Positive cases (should pass)
-    ("The story is great, I'm having fun!", True, "Passed"),
-    ("I attack the dragon with my sword.", True, "Passed"),
-    ("A normal conversational turn.", True, "Passed"),
+    ("The story is great, I'm having fun!", True, "Safety Gate: Passed"),
+    ("I attack the dragon with my sword.", True, "Safety Gate: Passed"),
+    ("A normal conversational turn.", True, "Safety Gate: Passed"),
 
     # Edge cases
-    (None, True, "Passed (No message)"),
-    ("", True, "Passed"),
-    ("HELP ME", False, "REJECTED (High-consequence keyword detected)"), # Test case insensitivity
+    (None, True, "Safety Gate: Passed (No message)"),
+    ("", True, "Safety Gate: Passed (No message)"),
+    ("HELP ME", False, "Safety Gate: REJECTED (High-consequence keyword detected)"), # Test case insensitivity
 ])
 def test_run_safety_gate(message: str, expected_pass: bool, reason_keyword: str):
     """

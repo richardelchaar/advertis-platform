@@ -10,8 +10,8 @@ data layer's logic, such as session creation and message history retrieval.
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from app.services import database
-from app.services.database import User, ChatSession, ChatMessage, Base
+from host_app.app.services import database
+from host_app.app.services.database import User, ChatSession, ChatMessage, Base
 
 # --- Fixture for an in-memory SQLite database session ---
 

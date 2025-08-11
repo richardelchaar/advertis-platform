@@ -1,8 +1,25 @@
 from fastapi import FastAPI, HTTPException
-# In advertis_service/app/main.py
 from app.models import CheckRequest, CheckResponse, AdRequest, AdResponse
-from app.services.agent_registry import get_agent
 from app.services import redis_client
+
+# --- NEW: Production-Grade Dependency Setup ---
+from app.services.verticals.gaming.agent import GamingAgent
+from app.services.vector_store import create_chroma_collection
+
+# Create dependencies when the application starts
+chroma_collection_instance = create_chroma_collection()
+gaming_agent_instance = GamingAgent(chroma_collection=chroma_collection_instance)
+
+# The agent registry can now hold singleton instances
+agent_registry = {
+    "gaming": gaming_agent_instance,
+}
+
+def get_agent_from_registry(vertical: str):
+    """Retrieves a configured agent instance from the registry."""
+    return agent_registry.get(vertical.lower())
+# --- END NEW SETUP ---
+
 
 # Initialize the FastAPI app
 app = FastAPI(
@@ -10,8 +27,6 @@ app = FastAPI(
     description="Provides narrative-as-a-service with integrated product placement.",
     version="1.0.0"
 )
-
-# --- API Endpoints ---
 
 @app.get("/health", summary="Health Check")
 async def health_check():
@@ -40,7 +55,7 @@ async def get_response_endpoint(request: AdRequest):
     This is the expensive call, only made if /check-opportunity succeeds.
     """
     # 1. Get the correct agent from the registry based on the request
-    agent = get_agent(request.app_vertical)
+    agent = get_agent_from_registry(request.app_vertical)
     if not agent:
         raise HTTPException(
             status_code=400, 

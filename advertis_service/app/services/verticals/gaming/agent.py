@@ -3,9 +3,9 @@ import json
 from typing import TypedDict, List, Optional
 
 from app import config
-from app.services import vector_store
 from app.services.verticals.base_agent import BaseAgent
 from app.services.verticals.gaming import prompts
+from chromadb.api.models.Collection import Collection
 
 from pydantic import BaseModel, Field
 from langchain_openai import ChatOpenAI
@@ -43,9 +43,10 @@ class OrchestratorResponse(BaseModel):
 
 
 class GamingAgent(BaseAgent):
-    def __init__(self):
+    def __init__(self, chroma_collection: Collection):
         # All LangGraph assembly logic goes here.
         workflow = StateGraph(AgentState)
+        self.chroma_collection = chroma_collection
 
         workflow.add_node("decision_gate", self.decision_gate_node)
         workflow.add_node("orchestrator", self.orchestrator_node)
@@ -77,12 +78,12 @@ class GamingAgent(BaseAgent):
 
         response = llm.invoke(prompts.DECISION_GATE_PROMPT + f"\n\nConversation History (last 4 turns):\n{history_str}")
 
-        return {"opportunity_assessment": response.dict()}
+        return {"opportunity_assessment": response.model_dump()}
 
     def orchestrator_node(self, state: AgentState):
         print("---AGENT: Running Orchestrator---")
         last_user_message = state["conversation_history"][-1]["content"]
-        results = vector_store.product_collection.query(
+        results = self.chroma_collection.query(
             query_texts=[last_user_message],
             n_results=5,
             where={"target_vertical": "gaming"}
@@ -121,7 +122,7 @@ class GamingAgent(BaseAgent):
             clean_json_str = json_match.group(0)
             response_data = json.loads(clean_json_str)
             validated_response = OrchestratorResponse.model_validate(response_data)
-            return {"orchestration_result": validated_response.dict()}
+            return {"orchestration_result": validated_response.model_dump()}
 
         except (json.JSONDecodeError, Exception) as e:
             print(f"---AGENT: ERROR - Failed to parse Orchestrator response. Forcing skip. Error: {e}---")

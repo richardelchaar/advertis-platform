@@ -14,19 +14,7 @@ from typing import Dict, Any, List, Optional
 import time
 
 # --- Fixtures for Loading Test Data ---
-
-@pytest.fixture(scope="session")
-def full_test_dataset() -> List[Dict[str, Any]]:
-    """
-    Loads the entire test dataset from the JSON file once per test session.
-    This is highly efficient as the file system is accessed only once, and the
-    data is cached in memory for all tests in the session.
-
-    Returns:
-        A list of dictionaries, where each dictionary is a test case.
-    """
-    with open("evaluation/data/test_dataset.json", "r") as f:
-        return json.load(f)
+# The full_test_dataset fixture now lives in evaluation/conftest.py for sharing across tests.
 
 # --- Mock Classes for Simulating External Dependencies ---
 
@@ -123,50 +111,34 @@ class MockLLM:
     A flexible and powerful mock for the LangChain ChatOpenAI model. This is the
     most critical mock in our suite. It allows for deterministic testing of our
     AI agent nodes by returning pre-defined responses based on keywords found
-    in the prompt. This lets a single mock instance intelligently serve different
-    responses to the Decision Gate, Orchestrator, and Host LLM nodes.
+    in the prompt.
     """
     def __init__(self, response_map: Dict[str, Any]):
-        """
-        Initializes with a response map.
-        The map's keys are keywords to look for in the prompt (e.g., "Brand Safety Analyst").
-        The map's values are the exact responses to return for that prompt.
-        """
         self.response_map = response_map
-        # Mock both async and sync methods to be safe
-        self.ainvoke = AsyncMock(side_effect=self._get_response_async)
-        self.invoke = MagicMock(side_effect=self._get_response_sync)
+        self.ainvoke = AsyncMock(side_effect=self._get_response)
+        self.invoke = MagicMock(side_effect=self._get_response)
 
-    def _get_response_sync(self, messages: Any, *args, **kwargs) -> MagicMock:
-        """The core synchronous response logic."""
+    def _get_response(self, messages: Any, *args, **kwargs) -> Any:
+        """The core response logic for both sync and async calls."""
         prompt_content = self._get_prompt_content(messages)
 
         for key, response in self.response_map.items():
             if key in prompt_content:
-                # For structured outputs, the test may expect a dict.
-                # For standard generation, it expects an object with a .content attribute.
-                if isinstance(response, dict):
-                    # For with_structured_output, the response itself is the model.
+                # If the mapped response is NOT a string (e.g., a Pydantic object),
+                # return it directly. This correctly simulates the behavior of
+                # a chain that has already parsed the output.
+                if not isinstance(response, str):
                     return response
 
-                # To simulate the structure of a real AIMessage
+                # Otherwise, for regular string generation, wrap in a mock message object.
                 mock_response_object = MagicMock()
                 mock_response_object.content = response
                 return mock_response_object
 
-        # If a prompt is received that isn't in our map, raise an error.
-        # This is good practice as it catches unintended LLM calls during tests.
         raise ValueError(f"MockLLM received an unmapped prompt. Content starts with: {prompt_content[:200]}")
 
-    async def _get_response_async(self, messages: Any, *args, **kwargs) -> MagicMock:
-        """The async version simply wraps the synchronous logic."""
-        return self._get_response_sync(messages, *args, **kwargs)
-
     def _get_prompt_content(self, messages: Any) -> str:
-        """
-        Helper method to extract the full text content from various message
-        formats that LangChain might pass (string, list of tuples, list of Message objects).
-        """
+        """Helper to extract text content from various message formats."""
         if isinstance(messages, str):
             return messages
         if isinstance(messages, list):
@@ -180,9 +152,5 @@ class MockLLM:
         raise TypeError(f"Unsupported message format for MockLLM: {type(messages)}")
 
     def with_structured_output(self, *args, **kwargs):
-        """
-        Mocks the `with_structured_output` chain method. It simply returns
-        itself, and our invoke logic will handle returning the pre-configured
-        dictionary, which simulates the behavior of the real structured output parser.
-        """
+        """Mocks the `with_structured_output` chain method by returning itself."""
         return self

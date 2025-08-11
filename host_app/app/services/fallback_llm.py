@@ -1,7 +1,7 @@
 # host_app/app/services/fallback_llm.py
 from typing import List, Dict
 from langchain_openai import ChatOpenAI
-from app import config
+from host_app.app import config
 
 async def get_fallback_response(history: List[Dict]) -> str:
     """
