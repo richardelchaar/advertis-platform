@@ -8,19 +8,19 @@ flowchart LR
     U[User (Browser)]
   end
 
-  subgraph HostApp[host_app (Streamlit)]
+  subgraph HostApp [host_app (Streamlit)]
     HA[UI + Orchestration\n(get_final_response)]
     class HA svc
   end
 
-  subgraph Inference[advertis_service (FastAPI)]
+  subgraph Inference [advertis_service (FastAPI)]
     API[FastAPI Endpoints\n/health · /v1/check-opportunity · /v1/get-response]
-    AG[GamingAgent (LangGraph)\nDecision→Orchestrator→Host LLM]
+    AG[GamingAgent (LangGraph)\nDecision -> Orchestrator -> Host LLM]
     class API,AG svc
     API --> AG
   end
 
-  subgraph Stores[Data Stores]
+  subgraph Stores [Data Stores]
     PG[(PostgreSQL\nquestweaver_db)]
     RD[(Redis\nsafety + frequency gates)]
     CH[(ChromaDB\nad inventory embeddings)]
@@ -33,6 +33,6 @@ flowchart LR
   HA <--> PG
   HA <--> API
   API <--> RD
-  AG  <--> CH
-  AG  <--> OA
+  AG <--> CH
+  AG <--> OA
   HA -. fallback LLM .-> OA
