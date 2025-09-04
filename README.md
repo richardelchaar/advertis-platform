@@ -122,8 +122,6 @@ graph LR
 Now that the opportunity is validated, the SDK sends the full conversation history to the main AI workflow. This **LangGraph** agent acts like a creative committee, with specialized AI agents making decisions at each step.
 
 ```mermaid
-es, the SDK sends the full conversation history to the main AI workflow. This LangGraph agent acts like a creative committee, with specialized AI agents making decisions at each step. If any of these creative checks fail, the workflow gracefully exits and your fallback is used.
-
 graph TB
     A["SDK sends history to /get-response"] --> B(LangGraph Workflow Starts);
 
