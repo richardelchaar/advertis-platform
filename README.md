@@ -3,18 +3,6 @@
 
 **A plug-and-play microservices platform to monetize any conversational AI with immersive, narrative-first product placements.**
 
-[](https://www.python.org/downloads/release/python-3110/)
-[](https://opensource.org/licenses/MIT)
-[](https://www.google.com/search?q=pytest.ini)
-[](https://www.google.com/search?q=docker-compose.yml)
-[](https://www.langchain.com/)
-
------
-
-### **[➡️ PLACE YOUR DEMO GIF HERE ⬅️]**
-
-*(Recommendation: Record a short, looping GIF of the Streamlit app showing a user prompt and the AI's response with a subtle product placement. This is the most powerful way to showcase the project.)*
-
 -----
 
 ## 🎯 The "Why": Solving the Billion-Dollar AI Question
@@ -64,7 +52,7 @@ This is our paradigm shift. Instead of treating ads as interruptions, Advertis l
 
 ### 3\. The Hybrid Model: Fast Filters & Smart AI
 
-To optimize for performance and cost, Advertis uses a two-stage process. It begins with **fast, rule-based filters** to instantly reject unsuitable opportunities. Only if these gates pass does it engage a **sophisticated, multi-agent AI workflow** to creatively analyze the context and generate a response. This "fail-fast" approach ensures your application remains responsive and you only incur the cost of advanced AI inference when there's a high-quality opportunity.
+To optimize for performance and cost, Advertis uses a two-stage process. It begins with **fast, rule-based filters** to instantly reject unsuitable opportunities. Only if these gates pass does it engage a **sophisticated, multi-agent AI workflow** to creatively analyze the context, retrieve a relevant ad product, and generate a response. This "fail-fast" approach ensures your application remains responsive and you only incur the cost of advanced AI inference when there's a high-quality opportunity.
 
 -----
 
@@ -105,16 +93,27 @@ Our example prompt, "I walk into the dimly lit bar...", easily passes this check
 
 ```mermaid
 graph LR
-    A["SDK sends prompt to /check-opportunity"] --> B{FastAPI Endpoint};
-    B --> C((fa:fa-redis Redis Database));
+    A["SDK sends prompt..."] --> B{FastAPI /check-opportunity};
+    B --> C((fa:fa-redis Redis));
     subgraph "Instantaneous Checks"
       C ==> D{"1. Keyword Safety Check"};
       C ==> E{"2. Pacing & Cooldown Check"};
     end
-    E --> F([PASS]);
-    D --> F
-    F --> G["Return { proceed: true }"];
-    G --> H["SDK proceeds to Phase 3..."];
+
+    subgraph "Decision"
+        F{"All Checks OK?"}
+    end
+
+    D -- "help", "stuck", etc. --> F;
+    E -- Too soon, too many ads --> F;
+    D -- Clean keywords --> F;
+    E -- Pacing OK --> F;
+
+    F -- No --> G([<b style='color:red;'>REJECT</b>]);
+    F -- Yes --> H([<b style='color:green;'>PASS</b>]);
+
+    G -- Return { proceed: false } --> I["SDK uses Fallback LLM"];
+    H -- Return { proceed: true } --> J["SDK proceeds to Phase 3"];
 ```
 
 ### Phase 3: The AI Creative Committee
@@ -127,19 +126,25 @@ graph TB
 
     subgraph "The AI Creative Committee"
         B --> C{"<b style='font-size:14px'>A. The Conscience</b><br>(Decision Gate)"};
-        C -- This is a great scene-setting moment! --> D(PASS);
+        C -- "Context is brand-unsafe<br>or narratively poor" --> X([<b style='color:red;'>SKIP</b>]);
+        C -- "This is a great scene-setting moment!" --> D(PASS);
 
         D --> E{"<b style='font-size:14px'>B. The Casting Director</b><br>(Orchestrator)"};
-        E -- "dimly lit bar" query --> F(fa:fa-database ChromaDB);
-        F -- Finds relevant ads:<br/>'Jack Daniel's Whiskey'<br/>'Coca-Cola'<br/>'Heineken' --> E;
-        E -- Selects 'Jack Daniel's' as best fit for a noir theme --> G(SELECTION MADE);
+        E -- "'dimly lit bar' query" --> F(fa:fa-database ChromaDB);
+        F -- "Finds ads:<br/>'Jack Daniel's Whiskey', etc." --> E;
+        E -- "No good creative fit found" --> X;
+        E -- "Selects 'Jack Daniel's' for noir theme" --> G(SELECTION MADE);
 
         G --> H{"<b style='font-size:14px'>C. The Screenwriter</b><br>(Narrative Engine)"};
-        H -- Combines scene context with the selected ad --> I(fa:fa-pen-fancy Final Story Crafted);
+        H -- "Combines scene with selected ad" --> I(fa:fa-pen-fancy Final Story Crafted);
     end
 
-    I --> J["<b>Final Response:</b><br/>'The door swings open to a dimly lit bar.<br/>A bottle of <b>Jack Daniel's</b> sits on the counter...<br/>The air is thick with smoke and regret.<br/>What do you do?'"];
-```
+    I --> Y([<b style='color:green;'>INJECT</b>]);
+
+    subgraph "Final Outcome"
+        X --> Z["Return { status: 'skip' }<br>SDK uses your Fallback LLM"];
+        Y --> AA["<b>Final Response:</b><br/>'The door swings open to a dimly lit bar.<br/>A bottle of <b>Jack Daniel's</b> sits on the counter...<br/>The air is thick with smoke and regret.<br/>What do you do?'"];
+    end
 
 This creative workflow consists of three key roles:
 
@@ -187,18 +192,19 @@ The repository is organized as a multi-service application, with a clear separat
 
 | Component | Technology |
 | :--- | :--- |
-| **Core Service** | [](https://fastapi.tiangolo.com/) [](https://langchain-ai.github.io/langgraph/) |
-| **Demo Application** | [](https://streamlit.io/) |
-| **Databases & Caching** | [](https://www.postgresql.org/) [](https://redis.io/) [](https://www.trychroma.com/) |
-| **Containerization** | [](https://www.docker.com/) |
-| **Testing** | [](https://pytest.org/) |
+| **Core AI Service** | [FastAPI](https://fastapi.tiangolo.com/), [LangGraph](https://langchain-ai.github.io/langgraph/) |
+| **Demo Application** | [Streamlit](https://streamlit.io/) |
+| **Databases & Caching** | [PostgreSQL](https://www.postgresql.org/), [Redis](https://redis.io/), [ChromaDB](https://www.trychroma.com/) |
+| **Containerization** | [Docker](https://www.docker.com/) |
+| **Testing** | [Pytest](https://pytest.org/) |
 | **AI Models** | GPT-4o, `text-embedding-3-small` |
+
 
 -----
 
 ## 🚀 Getting Started (Local Setup)
 
-You can run the entire multi-container platform on your local machine with Docker.
+These instructions will guide you through setting up the entire platform on your local machine, which includes a fully functional demo application built with Streamlit (host_app), which allows you to interact with the Advertis service and see monetized responses in real-time.
 
 ### Prerequisites
 
@@ -272,8 +278,7 @@ The project includes a comprehensive test suite with over 50 unit, integration, 
 
 Advertis is currently a proof-of-concept, but the architecture is designed for scale and future expansion. Potential next steps include:
 
-  * **[ ] Real-time Ad Bidding:** Develop a system for advertisers to bid on placement opportunities in real-time.
-  * **[ ] Advanced Analytics Dashboard:** Create a dashboard for developers to track monetization performance, placement frequency, and user engagement metrics.
-  * **[ ] Multi-Modal Placements:** Expand beyond text to suggest image or audio placements where appropriate.
-  * **[ ] More Verticals:** Build out and test specialized agents for new verticals like Travel, Education, and eCommerce.
-  * **[ ] A/B Testing Framework:** Allow developers to test different placement strategies and measure their impact on revenue and user retention.
+  * **Real-time Ad Bidding:** Develop a system for advertisers to bid on placement opportunities in real-time.
+  * **Advanced Analytics Dashboard:** Create a dashboard for developers to track monetization performance, placement frequency, and user engagement metrics.
+  * **Multi-Modal Placements:** Expand beyond text to suggest image or video placements where appropriate.
+  * **More Verticals:** Build out and test specialized agents for new verticals like Cooking, Education, and eCommerce.
