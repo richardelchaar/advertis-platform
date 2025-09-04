@@ -17,10 +17,11 @@ Imagine a tutoring platform where the integrated chatbot assistant explains phys
 
 Beyond the initial gaming demo, the Advertis service is architected for broad vertical integration. It can seamlessly adapt to power:
 
+  * **AI Story Teller**: Dynamically generate stories where characters use or interact with real products, creating a sponsored, immersive narrative (e.g., a hero using a Stanley Thermos on a cold mountain).
   * **Tutoring Platforms**: An assistant can integrate real-world products into math and physics problems, making abstract concepts more tangible (e.g., *"Calculate the acceleration of a Tesla Model S from 0-60 mph..."*).
   * **Cooking Apps**: A recipe assistant can suggest specific, branded products for an ingredient list, offering users convenience while driving affiliate revenue.
-  * **Dynamic NPC Conversations**: Enhance game realism by having non-player characters mention real-world brands (e.g., grabbing a Coca-Cola) or in-world lore items during dialogue.
-  * **Personal Companions**: A conversational AI can recommend a specific brand of tea during a conversation about relaxation or a particular app when discussing productivity.
+  * **Dynamic NPC Conversations**: Enhance realism by having video game characters mention the new Nike shoes they just bought.
+
 
 -----
 
@@ -104,16 +105,16 @@ graph LR
         F{"All Checks OK?"}
     end
 
-    D -- "help", "stuck", etc. --> F;
-    E -- Too soon, too many ads --> F;
-    D -- Clean keywords --> F;
-    E -- Pacing OK --> F;
+    D -- "Frustration keywords" --> F;
+    E -- "Pacing rules violated" --> F;
+    D -- "Keywords clean" --> F;
+    E -- "Pacing OK" --> F;
 
-    F -- No --> G([<b style='color:red;'>REJECT</b>]);
-    F -- Yes --> H([<b style='color:green;'>PASS</b>]);
+    F -- "No" --> G([<b style='color:red;'>REJECT</b>]);
+    F -- "Yes" --> H([<b style='color:green;'>PASS</b>]);
 
-    G -- Return { proceed: false } --> I["SDK uses Fallback LLM"];
-    H -- Return { proceed: true } --> J["SDK proceeds to Phase 3"];
+    G -- "Return { proceed: false }" --> I["SDK uses Fallback LLM"];
+    H -- "Return { proceed: true }" --> J["SDK proceeds to Phase 3"];
 ```
 
 ### Phase 3: The AI Creative Committee
@@ -121,6 +122,8 @@ graph LR
 Now that the opportunity is validated, the SDK sends the full conversation history to the main AI workflow. This **LangGraph** agent acts like a creative committee, with specialized AI agents making decisions at each step.
 
 ```mermaid
+es, the SDK sends the full conversation history to the main AI workflow. This LangGraph agent acts like a creative committee, with specialized AI agents making decisions at each step. If any of these creative checks fail, the workflow gracefully exits and your fallback is used.
+
 graph TB
     A["SDK sends history to /get-response"] --> B(LangGraph Workflow Starts);
 
@@ -131,9 +134,9 @@ graph TB
 
         D --> E{"<b style='font-size:14px'>B. The Casting Director</b><br>(Orchestrator)"};
         E -- "'dimly lit bar' query" --> F(fa:fa-database ChromaDB);
-        F -- "Finds ads:<br/>'Jack Daniel's Whiskey', etc." --> E;
+        F -- "Finds ads:<br/>'Jack Daniel''s Whiskey', etc." --> E;
         E -- "No good creative fit found" --> X;
-        E -- "Selects 'Jack Daniel's' for noir theme" --> G(SELECTION MADE);
+        E -- "Selects 'Jack Daniel''s' for noir theme" --> G(SELECTION MADE);
 
         G --> H{"<b style='font-size:14px'>C. The Screenwriter</b><br>(Narrative Engine)"};
         H -- "Combines scene with selected ad" --> I(fa:fa-pen-fancy Final Story Crafted);
@@ -143,8 +146,9 @@ graph TB
 
     subgraph "Final Outcome"
         X --> Z["Return { status: 'skip' }<br>SDK uses your Fallback LLM"];
-        Y --> AA["<b>Final Response:</b><br/>'The door swings open to a dimly lit bar.<br/>A bottle of <b>Jack Daniel's</b> sits on the counter...<br/>The air is thick with smoke and regret.<br/>What do you do?'"];
+        Y --> AA["<b>Final Response with Ad:</b><br/>'The door swings open to a dimly lit bar.<br/>A bottle of <b>Jack Daniel''s</b> sits on the counter...'"];
     end
+```
 
 This creative workflow consists of three key roles:
 
