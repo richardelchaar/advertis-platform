@@ -2,7 +2,13 @@
 import httpx
 from typing import List, Dict, Optional, Callable, Awaitable
 from pydantic import BaseModel
-from host_app.app import config
+# Conditional imports to handle both direct execution and package imports
+try:
+    # Try relative import first (works when run as part of host_app package)
+    from .. import config
+except ImportError:
+    # Fall back to absolute import (works when run directly in Docker)
+    import config
 
 # --- Pydantic Models for Deserialization ---
 class CheckResponse(BaseModel):

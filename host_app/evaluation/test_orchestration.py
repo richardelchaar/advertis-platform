@@ -11,25 +11,11 @@ correct behavior in response to both successful and failed monetization attempts
 import pytest
 from unittest.mock import AsyncMock
 import uuid
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from host_app.app import app as host_main_app
 from host_app.app.services import advertis_client, fallback_llm
-from host_app.app.services.database import Base
 
-# --- Local copy of db_session fixture ---
-@pytest.fixture(scope="function")
-def db_session():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(engine)
-    TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-        Base.metadata.drop_all(engine)
+# db_session fixture is now provided by conftest.py
 
 
 @pytest.mark.asyncio

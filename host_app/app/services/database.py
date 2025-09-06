@@ -8,7 +8,13 @@ from sqlalchemy import (create_engine, Column, Integer, String,
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 
-from host_app.app import config
+# Conditional imports to handle both direct execution and package imports
+try:
+    # Try relative import first (works when run as part of host_app package)
+    from .. import config
+except ImportError:
+    # Fall back to absolute import (works when run directly in Docker)
+    import config
 
 # --- Database Setup ---
 engine = create_engine(config.DATABASE_URL)

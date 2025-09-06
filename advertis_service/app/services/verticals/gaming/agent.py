@@ -73,7 +73,7 @@ class GamingAgent(BaseAgent):
     # --- Node methods ---
     def decision_gate_node(self, state: AgentState):
         print("---AGENT: Running Decision Gate---")
-        llm = ChatOpenAI(model="gpt-4o", temperature=0, api_key=config.OPENAI_API_KEY).with_structured_output(ConversationAnalysis)
+        llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0, api_key=config.OPENAI_API_KEY).with_structured_output(ConversationAnalysis)
         history_str = json.dumps(state["conversation_history"][-4:])
 
         response = llm.invoke(prompts.DECISION_GATE_PROMPT + f"\n\nConversation History (last 4 turns):\n{history_str}")
@@ -105,7 +105,7 @@ class GamingAgent(BaseAgent):
         if not candidate_docs:
             return {"orchestration_result": {"decision": "skip"}}
 
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.7, api_key=config.OPENAI_API_KEY)
+        llm = ChatOpenAI(model="gpt-4.1-mini", temperature=0.7, api_key=config.OPENAI_API_KEY)
         full_prompt = prompts.ORCHESTRATOR_PROMPT + f"\n\nConversation History:\n{json.dumps(state['conversation_history'])}\n\nCandidate Products:\n" + "\n".join(candidate_docs)
 
         print("\n---ORCHESTRATOR DEBUG: Full Prompt to LLM---")
@@ -131,7 +131,7 @@ class GamingAgent(BaseAgent):
 
     def host_llm_node(self, state: AgentState):
         print("---AGENT: Running Host LLM---")
-        llm = ChatOpenAI(model="gpt-4o", temperature=0.7, api_key=config.OPENAI_API_KEY)
+        llm = ChatOpenAI(model="gpt-4.1", temperature=0.7, api_key=config.OPENAI_API_KEY)
         system_prompt = prompts.HOST_LLM_PROMPT
         brief_str = json.dumps(state["orchestration_result"]["creative_brief"])
         brief_instruction = f"--- DIRECTOR'S BRIEF ---\n{brief_str}\n--- END BRIEF ---"

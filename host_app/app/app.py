@@ -1,7 +1,14 @@
 import streamlit as st
 import uuid
 import asyncio
-from host_app.app.services import database, advertis_client, fallback_llm
+
+# Conditional imports to handle both direct execution and package imports
+try:
+    # Try relative import first (works when run as part of host_app package)
+    from .services import database, advertis_client, fallback_llm
+except ImportError:
+    # Fall back to absolute import (works when run directly in Docker)
+    from services import database, advertis_client, fallback_llm
 
 # Module-level placeholders for dependencies used by get_final_response
 db_session = None
@@ -26,6 +33,10 @@ async def get_final_response(db_session, session_id: uuid.UUID, prompt: str) -> 
 
 def main():
     global db_session, selected_vertical
+    
+    # Initialize database tables first
+    database.init_db()
+    
     # Initialize DB session and ensure dummy user exists at app start
     db_session = next(database.get_db())
     dummy_user = database.get_or_create_dummy_user(db_session)
