@@ -199,7 +199,7 @@ The repository is organized as a multi-service application, with a clear separat
 | **Databases & Caching** | [PostgreSQL](https://www.postgresql.org/), [Redis](https://redis.io/), [ChromaDB](https://www.trychroma.com/) |
 | **Containerization** | [Docker](https://www.docker.com/) |
 | **Testing** | [Pytest](https://pytest.org/) |
-| **AI Models** | GPT-4o, `text-embedding-3-small` |
+| **AI Models** | GPT-4.1, GPT-4.1-mini, `text-embedding-3-small` |
 
 
 -----
