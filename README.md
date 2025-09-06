@@ -240,14 +240,8 @@ These instructions will guide you through setting up the entire platform on your
 
     This command will build the images for the `host_app` and `advertis_service`, and start all containers (PostgreSQL, Redis, ChromaDB, and the two apps).
 
-4.  **Seed the Vector Database:**
 
-      * In a **new terminal window**, execute the seeding script. This is a crucial one-time setup step that populates ChromaDB with the sample ad inventory.
-        ```bash
-        docker-compose exec advertis_service python scripts/seed_vector_store.py
-        ```
-
-5.  **Access the Application:**
+4.  **Access the Application:**
 
       * **Host App (QuestWeaver Demo):** Open your browser and navigate to `http://localhost:8080`
       * **Advertis Service (API Docs):** The FastAPI service is available at `http://localhost:8081`. You can view the interactive API documentation at `http://localhost:8081/docs`.
