@@ -22,6 +22,8 @@ The Advertis service is architected for broad vertical integration. It can seaml
   * **Cooking Apps**: A recipe assistant can suggest specific, branded products for an ingredient list, offering users convenience while driving affiliate revenue.
   * **Dynamic NPC Conversations**: Enhance realism by having video game characters mention the new Nike shoes they just bought.
 
+![Demo](advertis-demo.gif)
+
 
 -----
 
